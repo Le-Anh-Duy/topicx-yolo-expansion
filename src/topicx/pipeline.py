@@ -93,6 +93,32 @@ def load_bdd(cfg):
     return images, boxes, paths
 
 
+def _diagnose_images(dirs: dict, labels: dict) -> None:
+    """In thư mục con của thư mục ảnh và dò vị trí thật của ảnh trong record đầu file nhãn train."""
+    import json
+    for s, d in dirs.items():
+        subs = [(e.name, sum(1 for f in os.scandir(e.path) if f.name.endswith(".jpg"))) for e in os.scandir(d) if e.is_dir()]
+        print(f"[chẩn đoán] {d}: thư mục con {subs[:20] or 'không có'}")
+    with open(labels["train"], "rb") as f:
+        head = f.read(8_000_000).decode("utf-8", errors="ignore")
+    name = json.JSONDecoder().raw_decode(head, head.index("{"))[0]["name"]
+    print(f"[chẩn đoán] dò '{name}' trong {C.INPUT} ...", flush=True)
+    t0, hits, jpg_dirs = time.time(), [], []
+    for dirpath, dirnames, filenames in os.walk(C.INPUT, followlinks=True):
+        if name in filenames:
+            hits.append(dirpath)
+        n = sum(f.endswith(".jpg") for f in filenames)
+        if n > 500:
+            jpg_dirs.append((dirpath, n))
+        if time.time() - t0 > 300:
+            print("[chẩn đoán] dừng sau 5 phút")
+            break
+    print(f"[chẩn đoán] '{name}' nằm ở: {hits or 'KHÔNG TÌM THẤY trong mọi input'}")
+    print("[chẩn đoán] mọi thư mục có > 500 jpg:")
+    for p, n in sorted(jpg_dirs):
+        print(f"    {n:>7}  {p}")
+
+
 def health_check(cfg, n_sample: int = 20):
     """Kiểm nhanh (vài giây, không đọc cả file nhãn) xem đang đọc đúng BDD100K. Trả (bảng kiểm, ảnh mẫu có vẽ box).
     Lỗi nghiêm trọng -> AssertionError kèm bảng đã in."""
@@ -147,6 +173,8 @@ def health_check(cfg, n_sample: int = 20):
     rep = pd.DataFrame(rows)
     with pd.option_context("display.max_colwidth", 200):
         print(rep.to_string(index=False))
+    if not rep.ok.all():
+        _diagnose_images(dirs, labels)
     assert rep.ok.all(), "health check có mục FAIL (xem bảng trên)"
     print("health check OK: đúng BDD100K 100k + nhãn JSON gốc")
     return rep, sample
