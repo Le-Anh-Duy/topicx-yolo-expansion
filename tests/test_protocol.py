@@ -124,7 +124,8 @@ def test_locate_bdd_through_symlink(tmp_path):
     data._INDEX.clear()
     p = data.image_paths(imgs, dirs)
     assert sorted(p) == ["0.jpg", "nested-img.jpg"] and p["nested-img.jpg"].parent.name == "part2"
-    assert "json: det_train.json" in data.describe_tree(tmp_path / "input")
+    tree = data.describe_tree(tmp_path / "input")
+    assert "det_train.json" in tree and "2001 jpg" in tree
 
 
 def test_class_mapping_novel_last():
