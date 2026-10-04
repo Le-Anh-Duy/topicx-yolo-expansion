@@ -118,6 +118,12 @@ def test_locate_bdd_through_symlink(tmp_path):
     labels, dirs = data.locate_bdd(tmp_path / "input")
     assert set(labels) == set(dirs) == {"train", "val"}
     assert dirs["train"].parent.name == "100k", dirs  # không lấy nhầm bdd100k_seg
+    (dirs["train"] / "part2").mkdir()
+    (dirs["train"] / "part2" / "nested-img.jpg").touch()  # ảnh trong thư mục con vẫn được tìm thấy
+    imgs = pd.DataFrame({"image": ["0.jpg", "nested-img.jpg", "missing.jpg"], "src": ["train"] * 3})
+    data._INDEX.clear()
+    p = data.image_paths(imgs, dirs)
+    assert sorted(p) == ["0.jpg", "nested-img.jpg"] and p["nested-img.jpg"].parent.name == "part2"
     assert "json: det_train.json" in data.describe_tree(tmp_path / "input")
 
 

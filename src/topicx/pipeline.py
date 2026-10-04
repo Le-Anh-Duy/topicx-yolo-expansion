@@ -79,8 +79,7 @@ def load_bdd(cfg):
     boxes = pd.concat([p[1] for p in parts], ignore_index=True)
     assert images.image.is_unique
     paths = D.image_paths(images, dirs)
-    on_disk = {s: set(os.listdir(d)) for s, d in dirs.items()}  # một listdir mỗi thư mục, nhanh hơn exists() từng file
-    missing = {i for i, s in zip(images.image, images.src) if i not in on_disk[s]}
+    missing = set(images.image) - set(paths)  # image_paths chỉ chứa ảnh có file (duyệt đệ quy thư mục ảnh)
     print(f"[{time.time() - t0:.0f}s] kiểm file ảnh xong")
     assert len(missing) <= 0.01 * len(images), \
         f"{len(missing)}/{len(images)} ảnh có nhãn không có file trong {dirs} — sai thư mục ảnh (vd. bdd100k_seg thay vì images/100k)?"
@@ -124,11 +123,15 @@ def health_check(cfg, n_sample: int = 20):
     Lỗi nghiêm trọng -> AssertionError kèm bảng đã in."""
     import json
     from PIL import Image, ImageDraw
+    roots = [Path(r) for r in cfg.get("bdd_roots") or [] if Path(r).exists()]
+    root = roots[0] if roots else C.INPUT
+    print(f"Cây thư mục {root}:")
+    print(D.describe_tree(root), "\n", flush=True)
     labels, dirs = D.bdd_locations(cfg)
     rows, sample = [], None
     expect_imgs = {"train": 70000, "val": 10000}
     for s in ("train", "val"):
-        names = [f for f in os.listdir(dirs[s]) if f.endswith(".jpg")]
+        names = sorted(D.index_images(dirs[s]))  # đệ quy: tính cả ảnh trong thư mục con
         rows.append({"kiểm": f"ảnh {s}", "giá trị": f"{len(names)} jpg trong {dirs[s]}", "ok": len(names) >= 0.9 * expect_imgs[s],
                      "kỳ vọng": f"~{expect_imgs[s]}"})
         size_gb = labels[s].stat().st_size / 1e9
@@ -152,7 +155,7 @@ def health_check(cfg, n_sample: int = 20):
         rows.append({"kiểm": f"category {s}", "giá trị": f"lạ: {sorted(cats - known)}", "ok": not cats - known - {"other vehicle", "other person", "trailer"},
                      "kỳ vọng": "nằm trong classes/alias của config"})
         if rec:
-            p = Path(dirs[s]) / rec["name"]
+            p = D.index_images(dirs[s]).get(rec["name"], Path(dirs[s]) / rec["name"])
             ok = p.exists()
             wh = Image.open(p).size if ok else None
             rows.append({"kiểm": f"ảnh của record đầu {s}", "giá trị": f"{p.name} tồn tại={ok}, size={wh}", "ok": ok and wh == tuple(cfg["img_wh"]),

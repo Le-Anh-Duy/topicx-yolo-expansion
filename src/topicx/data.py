@@ -62,8 +62,21 @@ def load_labels(path: Path, src: str, alias: dict, keep: list[str]) -> tuple[pd.
     return images, pd.DataFrame(boxes, columns=BOX_COLS)
 
 
+_INDEX: dict = {}
+
+
+def index_images(d: Path) -> dict[str, Path]:
+    """Tên jpg -> đường dẫn, duyệt đệ quy (ảnh có thể nằm trong thư mục con). Cache theo thư mục."""
+    d = Path(d)
+    if d not in _INDEX:
+        _INDEX[d] = {f: Path(p) / f for p, _, fs in os.walk(d, followlinks=True) for f in fs if f.endswith(".jpg")}
+    return _INDEX[d]
+
+
 def image_paths(images: pd.DataFrame, image_dirs: dict) -> dict[str, Path]:
-    return {i: Path(image_dirs[s]) / i for i, s in zip(images.image, images.src)}
+    """Đường dẫn ảnh có trên đĩa; ảnh không có file thì không có trong dict."""
+    idx = {s: index_images(d) for s, d in image_dirs.items()}
+    return {i: idx[s][i] for i, s in zip(images.image, images.src) if i in idx[s]}
 
 
 # ---------- EDA ----------
@@ -206,8 +219,8 @@ def write_data_yaml(path: Path, names: list[str], train: Path, val: Path, test: 
     return path
 
 
-def describe_tree(root: Path, depth: int = 5, max_entries: int = 12) -> str:
-    """Cây thư mục rút gọn (đếm file, liệt kê .json) để chẩn đoán khi không tìm thấy BDD."""
+def describe_tree(root: Path, depth: int = 7, max_entries: int = 15) -> str:
+    """Cây thư mục: mỗi thư mục ghi số file, số jpg, các file .json/.txt/.csv; thư mục con quá nhiều thì rút gọn."""
     lines = []
     root = Path(root)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
@@ -215,12 +228,13 @@ def describe_tree(root: Path, depth: int = 5, max_entries: int = 12) -> str:
         if len(rel.parts) > depth:
             dirnames[:] = []
             continue
-        js = [f for f in filenames if f.endswith(".json")][:max_entries]
-        lines.append(f"{'  ' * len(rel.parts)}{rel.name or str(root)}/  ({len(filenames)} file{', json: ' + ', '.join(js) if js else ''})")
-        if len(filenames) > 2000:
-            dirnames[:] = []
+        n_jpg = sum(f.endswith(".jpg") for f in filenames)
+        meta = [f for f in filenames if f.endswith((".json", ".txt", ".csv"))][:max_entries]
+        extra = len(dirnames) - max_entries
+        lines.append(f"{'│  ' * len(rel.parts)}├─ {rel.name or str(root)}/  [{len(filenames)} file, {n_jpg} jpg, {len(dirnames)} thư mục con]"
+                     + (f"  {', '.join(meta)}" if meta else "") + (f"  (+{extra} thư mục con không hiện)" if extra > 0 else ""))
         dirnames[:] = sorted(dirnames)[:max_entries]
-    return "\n".join(lines[:300])
+    return "\n".join(lines[:400])
 
 
 def bdd_locations(cfg: dict) -> tuple[dict, dict]:
