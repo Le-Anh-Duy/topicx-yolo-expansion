@@ -100,6 +100,22 @@ def test_ranked_file_proposer(tmp_path):
     assert list(P.discover_ranked_files(tmp_path)) == ["EXT_p026"]
 
 
+def test_locate_bdd_through_symlink(tmp_path):
+    real = tmp_path / "real" / "bdd100k"
+    for s in ("train", "val"):
+        d = real / "images" / "100k" / s
+        d.mkdir(parents=True)
+        for i in range(2001):
+            (d / f"{i}.jpg").touch()
+        (real / "labels").mkdir(exist_ok=True)
+        (real / "labels" / f"det_{s}.json").write_text("[]")
+    (tmp_path / "input").mkdir()
+    (tmp_path / "input" / "bdd").symlink_to(real, target_is_directory=True)  # Kaggle mount kiểu symlink
+    labels, dirs = data.locate_bdd(tmp_path / "input")
+    assert set(labels) == set(dirs) == {"train", "val"}
+    assert "json: det_train.json" in data.describe_tree(tmp_path / "input")
+
+
 def test_class_mapping_novel_last():
     base, full = data.class_names(["a", "b", "c"], "b")
     assert base == ["a", "c"] and full == ["a", "c", "b"]

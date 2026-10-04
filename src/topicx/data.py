@@ -18,14 +18,17 @@ SPLITS = ("test", "dev", "pool", "base")
 
 # ---------- đọc dữ liệu ----------
 
-def locate_bdd(root: Path, max_depth: int = 7) -> tuple[dict, dict]:
-    """Tìm file nhãn {train,val} và thư mục ảnh 100k/{train,val}; không đi sâu vào thư mục ảnh."""
+LABEL_NAMES = ("bdd100k_labels_images_{s}.json", "det_{s}.json", "det_v2_{s}_release.json")
+
+
+def locate_bdd(root: Path, max_depth: int = 9) -> tuple[dict, dict]:
+    """Tìm file nhãn {train,val} và thư mục ảnh 100k/{train,val}; đi theo symlink (Kaggle mount), không đi sâu vào thư mục ảnh."""
     labels, images = {}, {}
     root = Path(root)
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         for f in filenames:
             for s in ("train", "val"):
-                if f in (f"bdd100k_labels_images_{s}.json", f"det_{s}.json"):
+                if f in [n.format(s=s) for n in LABEL_NAMES]:
                     labels.setdefault(s, Path(dirpath) / f)
         if len(filenames) > 2000:
             name = Path(dirpath).name
@@ -200,9 +203,44 @@ def write_data_yaml(path: Path, names: list[str], train: Path, val: Path, test: 
     return path
 
 
+def describe_tree(root: Path, depth: int = 5, max_entries: int = 12) -> str:
+    """Cây thư mục rút gọn (đếm file, liệt kê .json) để chẩn đoán khi không tìm thấy BDD."""
+    lines = []
+    root = Path(root)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        rel = Path(dirpath).relative_to(root)
+        if len(rel.parts) > depth:
+            dirnames[:] = []
+            continue
+        js = [f for f in filenames if f.endswith(".json")][:max_entries]
+        lines.append(f"{'  ' * len(rel.parts)}{rel.name or str(root)}/  ({len(filenames)} file{', json: ' + ', '.join(js) if js else ''})")
+        if len(filenames) > 2000:
+            dirnames[:] = []
+        dirnames[:] = sorted(dirnames)[:max_entries]
+    return "\n".join(lines[:300])
+
+
+def bdd_locations(cfg: dict) -> tuple[dict, dict]:
+    """(file nhãn {train,val}, thư mục ảnh {train,val}): lấy từ cfg["bdd_paths"] nếu khai báo, không thì tự dò /kaggle/input."""
+    from .common import INPUT
+    over = cfg.get("bdd_paths") or {}
+    labels, dirs = locate_bdd(INPUT) if not all(over.get(k) for k in ("labels_train", "labels_val", "images_train", "images_val")) else ({}, {})
+    for s in ("train", "val"):
+        if over.get(f"labels_{s}"):
+            labels[s] = Path(over[f"labels_{s}"])
+        if over.get(f"images_{s}"):
+            dirs[s] = Path(over[f"images_{s}"])
+    if set(labels) != {"train", "val"} or set(dirs) != {"train", "val"}:
+        print(describe_tree(INPUT))
+        raise FileNotFoundError(
+            f"không tìm đủ BDD100K: nhãn={labels} ảnh={dirs}. Cần ảnh images/100k/{{train,val}} và nhãn detection "
+            f"({', '.join(n.format(s='{train,val}') for n in LABEL_NAMES)}). Gắn đúng dataset, hoặc khai báo bdd_paths "
+            f"trong configs/exp.yaml / gán cfg['bdd_paths'] trong notebook. Cây /kaggle/input in ở trên.")
+    return labels, dirs
+
+
 def split_paths(cfg: dict) -> dict[str, Path]:
     """Đường dẫn ảnh của mọi ảnh trong các tập (từ splits/image_src.csv + thư mục BDD đang gắn)."""
-    from .common import INPUT, find
+    from .common import find
     src = pd.read_csv(find(cfg, "splits/image_src.csv"))
-    _, dirs = locate_bdd(INPUT)
-    return image_paths(src, dirs)
+    return image_paths(src, bdd_locations(cfg)[1])

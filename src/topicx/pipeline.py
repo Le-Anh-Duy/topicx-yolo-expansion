@@ -66,9 +66,8 @@ def _oracle(cfg, stage) -> OracleStore:
 # ---------- 1. dữ liệu + chia tập ----------
 
 def load_bdd(cfg):
-    labels, dirs = D.locate_bdd(C.INPUT)
-    assert set(labels) == {"train", "val"} and set(dirs) == {"train", "val"}, \
-        f"gắn dataset BDD100K có images/100k/{{train,val}} và nhãn det: {labels} {dirs}"
+    labels, dirs = D.bdd_locations(cfg)
+    print("nhãn:", labels, "\nảnh:", dirs)
     parts = [D.load_labels(labels[s], s, cfg["alias"], cfg["classes"]) for s in ("train", "val")]
     images = pd.concat([p[0] for p in parts], ignore_index=True)
     boxes = pd.concat([p[1] for p in parts], ignore_index=True)
