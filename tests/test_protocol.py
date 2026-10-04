@@ -46,6 +46,21 @@ def test_check_splits_catches_group_leak():
         data.check_splits(dict(s, dev=s["dev"] + [extra]), imgs2, has_novel)
 
 
+def test_weak_base_has_exact_novel_quota():
+    imgs, has_novel = _toy()
+    s = data.make_splits(imgs, has_novel, {"test": 40, "dev": 30, "pool": 80, "base": 60}, seed=1, n_weak=3)
+    assert data.check_splits(s, imgs, has_novel, n_weak=3)["base"]["n_novel_images"] == 3
+    with pytest.raises(AssertionError, match="cần đúng 0"):
+        data.check_splits(s, imgs, has_novel)
+
+
+def test_scenario_artifact_dirs():
+    assert common.load_config(False)["art"] == "art"
+    assert common.load_config(True, "weak")["art"] == "art_smoke_weak"
+    with pytest.raises(AssertionError):
+        common.load_config(False, "other")
+
+
 def test_test_source_val_only():
     imgs, has_novel = _toy()
     imgs["src"] = np.where(imgs.group < "g020", "val", "train")

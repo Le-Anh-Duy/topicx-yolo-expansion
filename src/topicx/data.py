@@ -97,10 +97,11 @@ def class_names(classes: list[str], novel: str) -> tuple[list[str], list[str]]:
 # ---------- chia tập ----------
 
 def make_splits(images: pd.DataFrame, has_novel: set[str], sizes: dict, seed: int,
-                test_source: str | None = None) -> dict[str, list[str]]:
+                test_source: str | None = None, n_weak: int = 0) -> dict[str, list[str]]:
     """Chia theo group (không group nào nằm ở 2 tập). test/dev/pool lấy nguyên group (giữ cả ảnh positive và negative);
     base lấy từ các group còn lại nhưng bỏ ảnh có novel class.
-    `test_source="val"`: test chỉ lấy group toàn ảnh BDD val; dev/pool/base chỉ lấy group không có ảnh val."""
+    `test_source="val"`: test chỉ lấy group toàn ảnh BDD val; dev/pool/base chỉ lấy group không có ảnh val.
+    `n_weak` > 0 (kịch bản weak): base giữ đúng n_weak ảnh có novel đầu tiên gặp, bỏ các ảnh novel còn lại."""
     groups = images.groupby("group").image.apply(sorted)
     order = list(np.random.default_rng(seed).permutation(sorted(groups.index)))
     if test_source:
@@ -125,12 +126,19 @@ def make_splits(images: pd.DataFrame, has_novel: set[str], sizes: dict, seed: in
     out = {"test": take(test_order, sizes["test"])}
     out["dev"] = take(order, sizes["dev"])
     out["pool"] = take(order, sizes["pool"])
-    out["base"] = take(order, sizes["base"], keep=lambda i: i not in has_novel)
+    quota = [n_weak]
+
+    def keep_base(i):
+        if i not in has_novel:
+            return True
+        quota[0] -= 1
+        return quota[0] >= 0
+    out["base"] = take(order, sizes["base"], keep=keep_base)
     return out
 
 
-def check_splits(splits: dict, images: pd.DataFrame, has_novel: set[str]) -> dict:
-    """Kiểm tra không giao nhau theo ảnh và group; base không có novel; pool có cả positive và negative."""
+def check_splits(splits: dict, images: pd.DataFrame, has_novel: set[str], n_weak: int = 0) -> dict:
+    """Kiểm tra không giao nhau theo ảnh và group; base có đúng n_weak ảnh novel (missing: 0); pool có cả positive và negative."""
     group = dict(zip(images.image, images.group))
     names = list(splits)
     for i, a in enumerate(names):
@@ -138,7 +146,8 @@ def check_splits(splits: dict, images: pd.DataFrame, has_novel: set[str]) -> dic
             assert not set(splits[a]) & set(splits[b]), f"ảnh trùng giữa {a} và {b}"
             ga, gb = {group[x] for x in splits[a]}, {group[x] for x in splits[b]}
             assert not ga & gb, f"group trùng giữa {a} và {b}"
-    assert not set(splits["base"]) & has_novel, "base train chứa ảnh có novel class"
+    n_base_novel = len(set(splits["base"]) & has_novel)
+    assert n_base_novel == n_weak, f"base train có {n_base_novel} ảnh novel, cần đúng {n_weak}"
     n_pos = len(set(splits["pool"]) & has_novel)
     assert 0 < n_pos < len(splits["pool"]), "pool phải có cả ảnh positive và negative"
     return {s: {"n_images": len(v), "n_novel_images": len(set(v) & has_novel)} for s, v in splits.items()}

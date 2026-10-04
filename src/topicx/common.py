@@ -27,13 +27,16 @@ def _merge(a: dict, b: dict) -> dict:
     return out
 
 
-def load_config(smoke: bool) -> dict:
+def load_config(smoke: bool, scenario: str = "missing") -> dict:
+    """scenario: "missing" (base chưa có novel class, mở rộng head) | "weak" (base có ít ảnh novel, không mở rộng head)."""
+    assert scenario in ("missing", "weak"), scenario
     cfg = yaml.safe_load((REPO / "configs" / "exp.yaml").read_text(encoding="utf-8"))
     smoke_over = cfg.pop("smoke")
     if smoke:
         cfg = _merge(cfg, smoke_over)
     cfg["smoke"] = smoke
-    cfg["art"] = "art_smoke" if smoke else "art"
+    cfg["scenario"] = scenario
+    cfg["art"] = "art" + ("_smoke" if smoke else "") + ("_weak" if scenario == "weak" else "")
     cfg["t0"] = time.time()  # mốc ngân sách thời gian session
     return cfg
 

@@ -4,6 +4,10 @@
     splits -> base model -> proposal (K ảnh từ pool, không nhãn) -> chốt manifest -> oracle trả nhãn BDD
     -> mở rộng head + finetune (replay + K) -> đánh giá trên final test -> uplift so với RANDOM cùng seed, cùng K
 
+Kịch bản (`cfg["scenario"]`):
+  - missing: base train không có ảnh novel; base model chỉ biết base classes; mở rộng head trước khi finetune.
+  - weak: base train có đúng `weak_novel_images` ảnh novel; base model biết đủ class (novel yếu); finetune thẳng từ base.
+
 Cắm thuật toán proposal mới:
   - hàm `fn(pool: Pool, k: int, seed: int) -> list[str]` (hoặc `(list[str], meta: dict)`), truyền vào `propose()`;
   - hoặc file xếp hạng (txt mỗi dòng một id ảnh pool, hoặc csv có cột `image`) -> `from_ranked_file()` / `discover_ranked_files()`.
@@ -40,6 +44,19 @@ def _sel(cfg, s, k, b) -> Path:
 
 def _meta(cfg) -> dict:
     return C.load(_art(cfg, "splits/meta.json"))
+
+
+def _weak(cfg) -> bool:
+    return cfg["scenario"] == "weak"
+
+
+def _n_weak(cfg) -> int:
+    return cfg["weak_novel_images"] if _weak(cfg) else 0
+
+
+def _base_taxonomy(meta: dict) -> list[str]:
+    """Class mà base model được train: missing -> base classes; weak -> đủ base + novel."""
+    return meta["names"] if meta["scenario"] == "weak" else meta["base_names"]
 
 
 def _oracle(cfg, stage) -> OracleStore:
@@ -83,13 +100,14 @@ def prepare_splits(cfg, novel: str, reason: str, images=None, boxes=None, paths=
     if mp.exists():
         meta = C.load(mp)
         assert meta["novel"] == novel, f"splits đã có với novel={meta['novel']}; bỏ input đó hoặc đặt NOVEL khớp"
+        assert meta["scenario"] == cfg["scenario"], f"splits trong input thuộc kịch bản {meta['scenario']}"
         return meta
     assert novel in cfg["novel_candidates"] and reason, "đặt NOVEL và REASON"
     if images is None:
         images, boxes, paths = load_bdd(cfg)
     has_novel = set(boxes.image[boxes.cls == novel])
-    splits = D.make_splits(images, has_novel, cfg["sizes"], cfg["seed_split"], cfg.get("test_source"))
-    report = D.check_splits(splits, images, has_novel)
+    splits = D.make_splits(images, has_novel, cfg["sizes"], cfg["seed_split"], cfg.get("test_source"), _n_weak(cfg))
+    report = D.check_splits(splits, images, has_novel, _n_weak(cfg))
     dups = D.md5_duplicates(splits, paths) if cfg["md5_check"] else None
     assert not dups, dups[:5]
     base_names, names = D.class_names(cfg["classes"], novel)
@@ -113,7 +131,9 @@ def prepare_splits(cfg, novel: str, reason: str, images=None, boxes=None, paths=
     images[images.image.isin(pool)].to_csv(C.out(cfg, "splits/oracle/pool_images.csv"), index=False)
     boxes[boxes.image.isin(pool)].to_csv(C.out(cfg, "splits/oracle/pool_boxes.csv"), index=False)
     C.write_ids(splits["pool"], C.out(cfg, "splits/oracle/pool_ids.txt"))
-    meta = {"novel": novel, "reason": reason, "base_names": base_names, "names": names, "sizes": cfg["sizes"],
+    meta = {"novel": novel, "reason": reason, "scenario": cfg["scenario"], "n_weak": _n_weak(cfg),
+            "base_novel_instances": int(((boxes.cls == novel) & boxes.image.isin(set(splits["base"]))).sum()),
+            "base_names": base_names, "names": names, "sizes": cfg["sizes"],
             "test_source": cfg.get("test_source"), "seed_split": cfg["seed_split"], "report": report,
             "test_novel_instances": test_novel, "md5_checked": cfg["md5_check"]}
     C.dump(meta, mp)
@@ -131,11 +151,12 @@ def train_base(cfg) -> tuple[Path, dict]:
     if mp.exists():
         return W, C.load(mp)
     meta = _meta(cfg)
-    base_names = meta["base_names"]
+    base_names = _base_taxonomy(meta)  # weak: đủ class
     paths = D.split_paths(cfg)
     pub = pd.read_csv(_art(cfg, "splits/public_boxes.csv"))
     ids = {s: C.read_ids(_art(cfg, f"splits/{s}_ids.txt")) for s in ("base", "dev")}
-    assert not set(pub.image[pub.cls == meta["novel"]]) & set(ids["base"]), "base train có novel"
+    n_nov = len(set(pub.image[pub.cls == meta["novel"]]) & set(ids["base"]))
+    assert n_nov == meta["n_weak"], f"base train có {n_nov} ảnh novel, cần {meta['n_weak']}"
     yd = C.SCRATCH / "yolo"
     tr = D.write_yolo(yd / "base_train", ids["base"], pub, base_names, paths, cfg["img_wh"])
     dv = D.write_yolo(yd / "dev_base", ids["dev"], pub, base_names, paths, cfg["img_wh"])
@@ -353,7 +374,7 @@ def train_branches(cfg, branches, seeds, ks) -> list[str]:
     oracle = _oracle(cfg, "train")
     todo = []
     for s in seeds:
-        exp = C.out(cfg, f"expand/s{s}/expanded.pt")
+        exp = base_w if _weak(cfg) else C.out(cfg, f"expand/s{s}/expanded.pt")  # weak: finetune thẳng từ base
         if not exp.exists():
             log = Y.expand_head(base_w, exp, names, seed=s)
             log["max_diff_vs_base"] = Y.check_expansion(base_w, exp)
@@ -419,8 +440,10 @@ def evaluate(cfg, branches, seeds, ks) -> dict:
             subsets[t] = ydir(f"test_{t}", ids_t, names)
     bp = _art(cfg, "eval/base_model.json")
     if not bp.exists():
-        C.dump(Y.eval_ap(_art(cfg, f"base/run/{W}.pt"), ydir("test_base", test, base_names), "test", imgsz, E["batch"]), C.out(cfg, "eval/base_model.json"))
+        C.dump(Y.eval_ap(_art(cfg, f"base/run/{W}.pt"), ydir("test_base", test, _base_taxonomy(meta)), "test", imgsz, E["batch"]),
+               C.out(cfg, "eval/base_model.json"))
     base_ap = C.load(bp)
+    base_novel = base_ap.get(novel, {}).get("ap50_95", 0.0)  # missing: base không có class novel -> 0
     mean_ap = lambda ap, cls: float(np.nanmean([ap.get(c, {}).get("ap50_95", np.nan) for c in cls]))
     base_map = mean_ap(base_ap, base_names)
     rc = f"novel_recall@{E['conf']}"
@@ -438,6 +461,7 @@ def evaluate(cfg, branches, seeds, ks) -> dict:
         ev = C.load(ep)
         ap = ev["ap"]
         rows.append({**r, "novel_ap50_95": ap.get(novel, {}).get("ap50_95", 0.0), "novel_ap50": ap.get(novel, {}).get("ap50", 0.0),
+                     "uplift_vs_base_model": ap.get(novel, {}).get("ap50_95", 0.0) - base_novel,
                      "base_map": mean_ap(ap, base_names), "base_map_delta": mean_ap(ap, base_names) - base_map,
                      "all_map": mean_ap(ap, names), rc: ev["recall"],
                      **{f"recall_{a}": v for a, v in ev["recall_by_size"].items()},
@@ -451,7 +475,7 @@ def evaluate(cfg, branches, seeds, ks) -> dict:
     assert (df.groupby(["seed", "k"]).n_images.nunique() == 1).all(), "số ảnh train khác nhau giữa các nhánh"
     plan = {f"s{s}_k{k}_{b}" for s in seeds for k in ks for b in branches}
     missing = sorted(plan - {f"s{a}_k{b}_{c}" for a, b, c in zip(df.seed, df.k, df.branch)})
-    metrics = ["novel_ap50_95", "novel_ap50", rc, "base_map", "base_map_delta", "all_map",
+    metrics = ["novel_ap50_95", "novel_ap50", "uplift_vs_base_model", rc, "base_map", "base_map_delta", "all_map",
                "n_novel_images", "n_novel_instances", "n_base_instances_new"]
     summ = M.paired_summary(df, metrics) if "RANDOM" in set(df.branch) else df.groupby(["k", "branch"])[metrics].agg(["mean", "std"])
     uplift = None
@@ -470,9 +494,12 @@ def evaluate(cfg, branches, seeds, ks) -> dict:
             return t.to_markdown()
         except ImportError:
             return "```\n" + t.to_string() + "\n```"
-    report = f"""# Kết quả uplift — novel = {novel} (smoke={cfg['smoke']})
+    desc = (f"base train có {meta['n_weak']} ảnh / {meta['base_novel_instances']} instance {novel}" if _weak(cfg)
+            else f"base model chưa có class {novel}")
+    report = f"""# Kết quả uplift — novel = {novel}, kịch bản {cfg['scenario']} (smoke={cfg['smoke']})
 
-Base model (chưa có class {novel}): base mAP50-95 trên final test = {base_map:.4f}. Thiếu run: {missing or 'không'}.
+Base model ({desc}): base mAP50-95 = {base_map:.4f}, AP50-95 {novel} = {base_novel:.4f} trên final test. Thiếu run: {missing or 'không'}.
+`uplift_vs_base_model` = AP {novel} sau finetune − AP {novel} của base model.
 Annotation là mô phỏng từ ground truth BDD. ORACLE_POSITIVE / RETRIEVAL_MATCHED dùng nhãn ẩn (tham chiếu, không phải phương pháp thực tế).
 
 ## 1. Tập dữ liệu do mỗi cách proposal tạo ra (pool, trước khi train)
@@ -488,4 +515,5 @@ Annotation là mô phỏng từ ground truth BDD. ORACLE_POSITIVE / RETRIEVAL_MA
 {md(df[['seed', 'k', 'branch'] + metrics].sort_values(['k', 'branch', 'seed']).set_index(['k', 'branch', 'seed']))}
 """
     C.out(cfg, "eval/report.md").write_text(report, encoding="utf-8")
-    return {"runs": df, "summary": summ, "uplift": uplift, "retrieval": ret, "missing": missing, "base_map": base_map}
+    return {"runs": df, "summary": summ, "uplift": uplift, "retrieval": ret, "missing": missing, "base_map": base_map,
+            "base_novel_ap": base_novel}

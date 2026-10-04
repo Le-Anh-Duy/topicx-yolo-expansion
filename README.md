@@ -10,6 +10,18 @@ lượng supervision novel tương đương?
 
 **Chỉ chạy trên Kaggle.** Repo không giả định môi trường local.
 
+## Hai kịch bản
+
+| Notebook | Kịch bản | Base model | Finetune | Artifact |
+|---|---|---|---|---|
+| `00_uplift_pipeline.ipynb` | **missing** | train trên BDD, chưa có novel class (base train bỏ mọi ảnh có class đó) | mở rộng head thêm novel | `art/` |
+| `00_uplift_pipeline_weak.ipynb` | **weak** | train trên BDD với đủ class, novel chỉ có `weak_novel_images` ảnh (mặc định 100) | finetune thẳng, không mở rộng head | `art_weak/` |
+
+Cả hai đều bắt đầu từ `yolo11n.pt` (COCO) rồi train trên base train BDD, nên base model là model đã train trên dữ liệu của ta, không phải model gốc của tác giả.
+Hai kịch bản dùng cùng seed chia, cùng pool, dev và test. Chúng chạy độc lập, mỗi kịch bản có base model riêng.
+Báo cáo có `uplift_vs_base_model` (AP novel sau finetune − AP novel của base model; với missing thì AP novel của base là 0) và uplift so với RANDOM.
+Trong 01–05, đặt `SCENARIO` ở cell setup (mặc định `missing`).
+
 ## Đánh giá uplift cho một thuật toán proposal: `notebooks/00_uplift_pipeline.ipynb`
 
 Notebook này chạy cả luồng trong một chỗ: splits → base model → proposal → nhãn BDD → finetune → uplift so với RANDOM.

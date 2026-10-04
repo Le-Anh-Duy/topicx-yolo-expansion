@@ -14,6 +14,7 @@ novel_candidates: [rider, bus, motorcycle]
 test_source: val             # final test lấy từ BDD val; dev / pool / base lấy từ BDD train (không giao nhau)
 sizes: {test: 5000, dev: 3000, pool: 20000, base: 15000}   # số ảnh (chia theo group, có thể vượt nhẹ)
 replay: 5000                  # replay set lấy từ base train, chung cho mọi nhánh / seed
+weak_novel_images: 100        # kịch bản weak: số ảnh có novel trong base train (nhãn đầy đủ)
 img_wh: [1280, 720]           # NB1 kiểm trên mẫu ảnh
 md5_check: true               # kiểm exact duplicate giữa các tập (đọc toàn bộ file, vài phút)
 
@@ -44,6 +45,7 @@ smoke:                        # SMOKE=True trong notebook: chạy cả pipeline 
   ks: [100]
   sizes: {test: 300, dev: 200, pool: 600, base: 600}
   replay: 200
+  weak_novel_images: 10
   md5_check: false
   yolo:
     base: {epochs: 1, batch: 16}
