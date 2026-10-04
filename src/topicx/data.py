@@ -96,20 +96,36 @@ def class_names(classes: list[str], novel: str) -> tuple[list[str], list[str]]:
 
 # ---------- chia tập ----------
 
-def make_splits(images: pd.DataFrame, has_novel: set[str], sizes: dict, seed: int) -> dict[str, list[str]]:
+def make_splits(images: pd.DataFrame, has_novel: set[str], sizes: dict, seed: int,
+                test_source: str | None = None) -> dict[str, list[str]]:
     """Chia theo group (không group nào nằm ở 2 tập). test/dev/pool lấy nguyên group (giữ cả ảnh positive và negative);
-    base lấy từ các group còn lại nhưng bỏ ảnh có novel class."""
+    base lấy từ các group còn lại nhưng bỏ ảnh có novel class.
+    `test_source="val"`: test chỉ lấy group toàn ảnh BDD val; dev/pool/base chỉ lấy group không có ảnh val."""
     groups = images.groupby("group").image.apply(sorted)
-    order = np.random.default_rng(seed).permutation(sorted(groups.index))
-    out = {s: [] for s in SPLITS}
-    it = iter(order)
-    for s in ("test", "dev", "pool"):
-        while len(out[s]) < sizes[s]:
-            out[s] += groups[next(it)]
-    for g in it:
-        if len(out["base"]) >= sizes["base"]:
-            break
-        out["base"] += [i for i in groups[g] if i not in has_novel]
+    order = list(np.random.default_rng(seed).permutation(sorted(groups.index)))
+    if test_source:
+        srcs = images.groupby("group").src.agg(set)
+        test_order = [g for g in order if srcs[g] == {test_source}]
+        order = [g for g in order if test_source not in srcs[g]]
+    else:
+        test_order = order
+    used: set = set()
+
+    def take(cands, n, keep=lambda i: True):
+        got = []
+        for g in cands:
+            if len(got) >= n:
+                break
+            if g not in used:
+                used.add(g)
+                got += [i for i in groups[g] if keep(i)]
+        assert len(got) >= n, f"không đủ ảnh: cần {n}, có {len(got)}"
+        return got
+
+    out = {"test": take(test_order, sizes["test"])}
+    out["dev"] = take(order, sizes["dev"])
+    out["pool"] = take(order, sizes["pool"])
+    out["base"] = take(order, sizes["base"], keep=lambda i: i not in has_novel)
     return out
 
 

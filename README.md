@@ -10,6 +10,24 @@ lượng supervision novel tương đương?
 
 **Chỉ chạy trên Kaggle.** Repo không giả định môi trường local.
 
+## Đánh giá uplift cho một thuật toán proposal: `notebooks/00_uplift_pipeline.ipynb`
+
+Notebook này chạy cả luồng trong một chỗ: splits → base model → proposal → nhãn BDD → finetune → uplift so với RANDOM.
+
+- **Pool** là ảnh BDD **train** chưa từng dùng để train YOLO. **Final test** là BDD **val**. Dev và base cũng lấy từ BDD train, chia theo group nên không giao nhau.
+- **Cắm thuật toán mới:**
+  - Cách A: viết `fn(pool, k, seed) -> list[id]` rồi thêm vào `MY = {"TÊN": fn}`. Proposer chạy trong guard chặn đọc nhãn pool và chỉ thấy `pool.ids`, `pool.paths`, `pool.topic`, `pool.clip()`, `pool.dino()`, `pool.topic_scores()`.
+  - Cách B: chạy thuật toán ở nơi khác trên `splits/pool_ids.txt`, ghi danh sách xếp hạng ra `proposals/<tên>.txt` hoặc `.csv` (cột `image`), upload thành Kaggle Dataset rồi gắn vào. Nhánh tự xuất hiện với tên `EXT_<tên>`.
+- Đầu ra của proposer được kiểm: đúng K id, không trùng, thuộc pool. Sau đó manifest được chốt.
+- **Chạy tiếp khi hết giờ:** Save Version, gắn output đó làm input rồi chạy lại. Mọi bước đã xong (splits, base, manifest, run, eval) đều được bỏ qua. Muốn thử thuật toán mới trên cùng splits và base model thì gắn output cũ và thêm proposer: chỉ nhánh mới phải train.
+- Mặc định: RANDOM, RETRIEVAL, REPLAY_ONLY, K = 250, 3 seed. Kết quả ở `art/eval/report.md`:
+  - bảng 1: tập dữ liệu mỗi cách tạo ra;
+  - bảng 2: uplift AP novel so với RANDOM theo từng seed;
+  - bảng 3: mean/std và mức giữ base mAP;
+  - bảng 4: từng run.
+
+Các notebook 01–05 bên dưới là cùng pipeline đó tách thành từng bước có gate (gọi chung `src/topicx/pipeline.py`).
+
 ## Nhánh (cùng K ảnh, cùng expanded init và replay set trong mỗi seed)
 
 | Nhánh | Chọn K ảnh | Dùng nhãn ẩn? |
@@ -31,7 +49,7 @@ Mọi nhánh train trên `replay (5000) + K` ảnh, cùng epoch/batch/augmentati
 - Embed và selection chạy trong `no_oracle_access()`: audit hook chặn mọi `open` hoặc `listdir` tới đường dẫn chứa `oracle`.
 - `select.py` và `embed.py` không import oracle, data hay pandas (có test kiểm).
 - Manifest được chốt bằng sha256 và không sửa được. `OracleStore.reveal` chỉ mở nhãn của ảnh có trong manifest đã chốt. Mọi truy cập oracle được ghi vào `oracle_log.jsonl`.
-- Chia tập theo group (`<ride>` trong tên ảnh `<ride>-<clip>`). Test, dev và pool lấy nguyên group, base bỏ ảnh có novel. Kiểm tra cả md5 exact duplicate giữa các tập.
+- Chia tập theo group (`<ride>` trong tên ảnh `<ride>-<clip>`). Test chỉ lấy từ BDD val; dev, pool và base lấy từ BDD train. Test, dev và pool lấy nguyên group, base bỏ ảnh có novel. Kiểm tra cả md5 exact duplicate giữa các tập.
 - Prompt được chọn trên dev bằng luật khai báo trước (AP ranking cao nhất). Final test chỉ mở ở NB5.
 
 ## Chạy trên Kaggle
@@ -48,7 +66,7 @@ Mọi nhánh train trên `replay (5000) + K` ảnh, cùng epoch/batch/augmentati
 | 05_evaluate | 01, 02, 03, 04 (version cuối) | có | điền kết luận 3 câu |
 
 3. Chạy toàn bộ với `SMOKE = True` trước (tập nhỏ, 1 epoch, artifact riêng trong `art_smoke/`). Smoke pass rồi mới đặt `SMOKE = False`, pin `COMMIT`, chạy lại từ NB1.
-4. NB4 dừng trước khi vượt `kaggle.time_budget_h`. Khi đó: Save Version, gắn output vừa xong làm input của chính NB4 rồi chạy lại. Run đã xong được copy sang version mới.
+4. NB4 (và NB00) dừng trước khi vượt `kaggle.time_budget_h`. Khi đó: Save Version, gắn output vừa xong làm input của chính notebook đó rồi chạy lại. Cell setup copy mọi artifact từ input sang output (`sync_inputs`), nên version mới chứa đủ kết quả cũ và mới.
 
 Mỗi notebook chạy `pytest` (CPU, vài giây) ở cell đầu và ghi phiên bản thư viện, commit, GPU vào `art/<stage>/env.json`.
 
@@ -69,8 +87,10 @@ src/topicx/select.py      random / top-K / greedy diverse (port P-026 greedy_nms
 src/topicx/embed.py       OpenCLIP 3 crop, DINOv2-S
 src/topicx/yolo.py        mở rộng head, train, AP theo tên class, recall ở conf cố định
 src/topicx/metrics.py     chỉ số retrieval, tổng hợp theo cặp seed
+src/topicx/pipeline.py    các bước pipeline + Pool / PROPOSERS / from_ranked_file (điểm cắm proposal)
 tests/test_protocol.py    kiểm tra protocol bằng dữ liệu tổng hợp
-notebooks/01..05          luồng chạy trên Kaggle
+notebooks/00              cả pipeline uplift trong một notebook
+notebooks/01..05          cùng pipeline, tách bước có gate
 ```
 
 ## Giới hạn đã biết

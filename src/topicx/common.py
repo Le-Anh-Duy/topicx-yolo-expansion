@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import yaml
@@ -32,7 +34,22 @@ def load_config(smoke: bool) -> dict:
         cfg = _merge(cfg, smoke_over)
     cfg["smoke"] = smoke
     cfg["art"] = "art_smoke" if smoke else "art"
+    cfg["t0"] = time.time()  # mốc ngân sách thời gian session
     return cfg
+
+
+def sync_inputs(cfg: dict) -> int:
+    """Copy mọi <art>/ trong output notebook đã gắn (/kaggle/input) vào /kaggle/working/<art>; file đã có thì giữ.
+    Nhờ vậy output mỗi version chứa đủ kết quả cũ + mới, chạy lại notebook là chạy tiếp phần còn thiếu."""
+    dst, n = WORK / cfg["art"], 0
+    for src in sorted({p for d in ("*", "*/*", "*/*/*") for p in INPUT.glob(f"{d}/{cfg['art']}")}):
+        for f in src.rglob("*"):
+            t = dst / f.relative_to(src)
+            if f.is_file() and not t.exists():
+                t.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, t)
+                n += 1
+    return n
 
 
 def out(cfg: dict, rel: str) -> Path:

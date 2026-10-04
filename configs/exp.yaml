@@ -11,6 +11,7 @@ classes: [pedestrian, rider, car, truck, bus, motorcycle, bicycle, traffic light
 alias: {person: pedestrian, motor: motorcycle, bike: bicycle}   # nhãn BDD 2018 -> tên 2020
 novel_candidates: [rider, bus, motorcycle]
 
+test_source: val             # final test lấy từ BDD val; dev / pool / base lấy từ BDD train (không giao nhau)
 sizes: {test: 5000, dev: 3000, pool: 20000, base: 15000}   # số ảnh (chia theo group, có thể vượt nhẹ)
 replay: 5000                  # replay set lấy từ base train, chung cho mọi nhánh / seed
 img_wh: [1280, 720]           # NB1 kiểm trên mẫu ảnh
@@ -36,7 +37,7 @@ yolo:
   weights: last               # dùng last.pt (cùng số update) cho expand và đánh giá
 
 eval: {conf: 0.25, iou: 0.5, min_instances_subset: 50, batch: 32}
-kaggle: {time_budget_h: 11}   # NB4 không bắt đầu run mới nếu ước tính vượt ngân sách
+kaggle: {time_budget_h: 10}   # tính từ lúc notebook bắt đầu; không bắt đầu run train mới nếu ước tính vượt (chừa ~2h cho eval)
 
 smoke:                        # SMOKE=True trong notebook: chạy cả pipeline thật trên tập nhỏ
   seeds: [0]

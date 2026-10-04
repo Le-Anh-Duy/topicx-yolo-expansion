@@ -46,6 +46,45 @@ def test_check_splits_catches_group_leak():
         data.check_splits(dict(s, dev=s["dev"] + [extra]), imgs2, has_novel)
 
 
+def test_test_source_val_only():
+    imgs, has_novel = _toy()
+    imgs["src"] = np.where(imgs.group < "g020", "val", "train")
+    s = data.make_splits(imgs, has_novel, {"test": 40, "dev": 20, "pool": 60, "base": 40}, seed=1, test_source="val")
+    src = dict(zip(imgs.image, imgs.src))
+    assert {src[i] for i in s["test"]} == {"val"}
+    assert {src[i] for k in ("dev", "pool", "base") for i in s[k]} == {"train"}
+
+
+def test_propose_plugin_boundary(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from topicx import pipeline as P
+    monkeypatch.setattr(common, "WORK", tmp_path)
+    cfg = {"art": "art"}
+    pool = SimpleNamespace(ids=[f"p{i}" for i in range(20)], topic="bus")
+    P.propose(cfg, {"MINE": lambda pool, k, seed: (pool.ids[:k], {"note": "x"})}, [0], [5], pool)
+    m = common.read_frozen(tmp_path / "art/selections/s0_k5_MINE.json")
+    assert m["ids"] == pool.ids[:5] and m["note"] == "x"
+    with pytest.raises(AssertionError, match="khác nhau"):
+        P.propose(cfg, {"DUP": lambda pool, k, seed: [pool.ids[0]] * k}, [0], [5], pool)
+    with pytest.raises(AssertionError, match="không thuộc pool"):
+        P.propose(cfg, {"OUT": lambda pool, k, seed: [f"x{i}" for i in range(k)]}, [0], [5], pool)
+    od = tmp_path / "splits_oracle_boxes.csv"
+    od.write_text("image,cls")
+    with pytest.raises(PermissionError):
+        P.propose(cfg, {"PEEK": lambda pool, k, seed: open(od).read() and pool.ids[:k]}, [0], [5], pool)
+    with pytest.raises(AssertionError, match="dành riêng"):
+        P.propose(cfg, {"ORACLE_POSITIVE": lambda pool, k, seed: pool.ids[:k]}, [0], [5], pool)
+
+
+def test_ranked_file_proposer(tmp_path):
+    from topicx import pipeline as P
+    f = tmp_path / "my-dataset" / "proposals" / "p026.txt"  # như /kaggle/input/<dataset>/proposals/
+    common.write_ids(["b", "a", "c"], f)
+    assert P.from_ranked_file(f)(None, 2, 0)[0] == ["b", "a"]
+    assert list(P.discover_ranked_files(tmp_path)) == ["EXT_p026"]
+
+
 def test_class_mapping_novel_last():
     base, full = data.class_names(["a", "b", "c"], "b")
     assert base == ["a", "c"] and full == ["a", "c", "b"]
