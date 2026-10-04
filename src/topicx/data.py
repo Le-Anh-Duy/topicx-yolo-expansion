@@ -33,7 +33,8 @@ def locate_bdd(root: Path, max_depth: int = 9) -> tuple[dict, dict]:
                     labels.setdefault(s, Path(dirpath) / f)
         if len(filenames) > 2000:
             name = Path(dirpath).name
-            if name in ("train", "val") and "100k" in dirpath and any(f.endswith(".jpg") for f in filenames[:50]):
+            # đúng .../images/100k/{train,val}; tránh bdd100k_seg/.../seg/images/train (chữ "100k" trong "bdd100k")
+            if name in ("train", "val") and Path(dirpath).parent.name == "100k" and any(f.endswith(".jpg") for f in filenames[:50]):
                 images.setdefault(name, Path(dirpath))
             dirnames[:] = []
         if len(Path(dirpath).relative_to(root).parts) >= max_depth:
@@ -225,21 +226,27 @@ def describe_tree(root: Path, depth: int = 5, max_entries: int = 12) -> str:
 def bdd_locations(cfg: dict) -> tuple[dict, dict]:
     """(file nhãn {train,val}, thư mục ảnh {train,val}): lấy từ cfg["bdd_paths"] nếu khai báo, không thì tự dò /kaggle/input."""
     from .common import INPUT
+    # bdd_paths là đường dẫn tương đối so với một trong bdd_roots (Kaggle mount: /kaggle/input/datasets/<owner>/<slug> hoặc /kaggle/input/<slug>)
+    rel = {k: p for k, p in (cfg.get("bdd_paths") or {}).items() if p}
     over = {}
-    for k, p in (cfg.get("bdd_paths") or {}).items():
-        if p and Path(p).exists():
-            over[k] = p
-        elif p:
-            print(f"bdd_paths.{k} = {p} không tồn tại -> tự dò")
+    for root in cfg.get("bdd_roots") or []:
+        hit = {k: Path(root) / p for k, p in rel.items() if (Path(root) / p).exists()}
+        if len(hit) > len(over):
+            over = hit
+    if rel and len(over) < len(rel):
+        print(f"bdd_paths: chỉ thấy {sorted(over)} trong {cfg.get('bdd_roots')} -> tự dò phần còn lại")
     labels, dirs = locate_bdd(INPUT) if len(over) < 4 else ({}, {})
     slug = cfg.get("bdd_dataset")
-    if (set(labels) != {"train", "val"} or set(dirs) != {"train", "val"}) and slug:
-        # Trong Kaggle notebook, kagglehub tự gắn dataset vào notebook (panel Input) và đọc từ cache dùng chung.
-        import kagglehub
-        root = Path(kagglehub.dataset_download(slug))
-        print(f"kagglehub: {slug} -> {root}")
-        found_l, found_d = locate_bdd(root)
-        labels, dirs = {**found_l, **labels}, {**found_d, **dirs}
+    if (set(labels) != {"train", "val"} or set(dirs) != {"train", "val"}) and slug and len(over) < 4:
+        # kagglehub chỉ gắn được dataset mới khi chạy TƯƠNG TÁC; Save Version (non-interactive) thì phải Add Input bằng tay.
+        try:
+            import kagglehub
+            root = Path(kagglehub.dataset_download(slug))
+            print(f"kagglehub: {slug} -> {root}")
+            found_l, found_d = locate_bdd(root)
+            labels, dirs = {**found_l, **labels}, {**found_d, **dirs}
+        except Exception as e:
+            print(f"kagglehub không gắn được {slug}: {e}\n-> Gắn tay: Add Input -> tìm '{slug}' -> Add, rồi Save Version.")
     for s in ("train", "val"):
         if over.get(f"labels_{s}"):
             labels[s] = Path(over[f"labels_{s}"])

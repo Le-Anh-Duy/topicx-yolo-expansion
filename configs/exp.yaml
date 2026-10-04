@@ -14,12 +14,14 @@ novel_candidates: [rider, bus, motorcycle]
 # BDD100K trên Kaggle: dò /kaggle/input trước; không thấy thì tự gắn bdd_dataset bằng kagglehub (cần bật Internet).
 # Mirror phải có ảnh images/100k/{train,val} + nhãn JSON gốc của BDD (không phải bản đã đổi sang YOLO/COCO).
 bdd_dataset: solesensei/solesensei_bdd100k
-# Đường dẫn của mirror solesensei/solesensei_bdd100k khi gắn qua Add Input. Đường dẫn không tồn tại -> bỏ qua, tự dò.
+# Layout của mirror solesensei/solesensei_bdd100k (đã thấy trên Kaggle 2026-10). Đường dẫn tương đối theo root đầu tiên khớp;
+# không khớp -> tự dò. Lưu ý mirror có cả bdd100k_seg/.../images/train (7k ảnh segmentation) — KHÔNG phải ảnh detection.
+bdd_roots: [/kaggle/input/datasets/solesensei/solesensei_bdd100k, /kaggle/input/solesensei_bdd100k]
 bdd_paths:
-  labels_train: /kaggle/input/solesensei_bdd100k/bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_train.json
-  labels_val: /kaggle/input/solesensei_bdd100k/bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_val.json
-  images_train: /kaggle/input/solesensei_bdd100k/bdd100k/bdd100k/images/100k/train
-  images_val: /kaggle/input/solesensei_bdd100k/bdd100k/bdd100k/images/100k/val
+  labels_train: bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_train.json
+  labels_val: bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_val.json
+  images_train: bdd100k/bdd100k/images/100k/train
+  images_val: bdd100k/bdd100k/images/100k/val
 
 test_source: val             # final test lấy từ BDD val; dev / pool / base lấy từ BDD train (không giao nhau)
 sizes: {test: 5000, dev: 3000, pool: 20000, base: 15000}   # số ảnh (chia theo group, có thể vượt nhẹ)

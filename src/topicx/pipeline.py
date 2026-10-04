@@ -82,6 +82,8 @@ def load_bdd(cfg):
     on_disk = {s: set(os.listdir(d)) for s, d in dirs.items()}  # một listdir mỗi thư mục, nhanh hơn exists() từng file
     missing = {i for i, s in zip(images.image, images.src) if i not in on_disk[s]}
     print(f"[{time.time() - t0:.0f}s] kiểm file ảnh xong")
+    assert len(missing) <= 0.01 * len(images), \
+        f"{len(missing)}/{len(images)} ảnh có nhãn không có file trong {dirs} — sai thư mục ảnh (vd. bdd100k_seg thay vì images/100k)?"
     print(f"{len(images)} ảnh có nhãn, {len(missing)} không có file ảnh -> bỏ")
     images = images[~images.image.isin(missing)].reset_index(drop=True)
     boxes = boxes[boxes.image.isin(set(images.image))].reset_index(drop=True)

@@ -109,10 +109,15 @@ def test_locate_bdd_through_symlink(tmp_path):
             (d / f"{i}.jpg").touch()
         (real / "labels").mkdir(exist_ok=True)
         (real / "labels" / f"det_{s}.json").write_text("[]")
+    seg = real.parent / "bdd100k_seg" / "bdd100k" / "seg" / "images" / "train"  # mồi nhử: ảnh segmentation, xếp trước theo tên
+    seg.mkdir(parents=True)
+    for i in range(2001):
+        (seg / f"{i}.jpg").touch()
     (tmp_path / "input").mkdir()
-    (tmp_path / "input" / "bdd").symlink_to(real, target_is_directory=True)  # Kaggle mount kiểu symlink
+    (tmp_path / "input" / "bdd").symlink_to(real.parent, target_is_directory=True)  # Kaggle mount kiểu symlink
     labels, dirs = data.locate_bdd(tmp_path / "input")
     assert set(labels) == set(dirs) == {"train", "val"}
+    assert dirs["train"].parent.name == "100k", dirs  # không lấy nhầm bdd100k_seg
     assert "json: det_train.json" in data.describe_tree(tmp_path / "input")
 
 
