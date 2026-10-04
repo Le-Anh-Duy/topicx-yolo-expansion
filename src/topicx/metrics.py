@@ -17,6 +17,18 @@ def average_precision(scores, is_pos) -> float:
     return float((np.cumsum(pos)[pos] / (np.flatnonzero(pos) + 1)).mean())
 
 
+def tau_dev_f1(scores, is_pos) -> dict:
+    """Ngưỡng τ tối đa F1 của luật `score ≥ τ` so với positive trên dev (luật khai báo trước cho Algo 1)."""
+    s = np.asarray(scores, float)
+    order = np.argsort(-s, kind="stable")
+    pos = np.asarray(is_pos, bool)[order]
+    tp = np.cumsum(pos)
+    f1 = 2 * tp / (np.arange(1, len(s) + 1) + pos.sum())
+    j = int(np.argmax(f1))
+    return {"tau": float(s[order][j]), "dev_f1": float(f1[j]), "dev_precision": float(tp[j] / (j + 1)),
+            "dev_recall": float(tp[j] / max(pos.sum(), 1)), "dev_n_above": j + 1}
+
+
 def batch_redundancy(emb: np.ndarray) -> dict:
     """Mức trùng lặp trong batch: cosine với láng giềng gần nhất (trung bình) và tỉ lệ ảnh có láng giềng cos > 0.95."""
     e = np.asarray(emb, np.float32)

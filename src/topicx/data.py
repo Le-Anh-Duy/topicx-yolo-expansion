@@ -223,8 +223,13 @@ def describe_tree(root: Path, depth: int = 5, max_entries: int = 12) -> str:
 def bdd_locations(cfg: dict) -> tuple[dict, dict]:
     """(file nhãn {train,val}, thư mục ảnh {train,val}): lấy từ cfg["bdd_paths"] nếu khai báo, không thì tự dò /kaggle/input."""
     from .common import INPUT
-    over = cfg.get("bdd_paths") or {}
-    labels, dirs = locate_bdd(INPUT) if not all(over.get(k) for k in ("labels_train", "labels_val", "images_train", "images_val")) else ({}, {})
+    over = {}
+    for k, p in (cfg.get("bdd_paths") or {}).items():
+        if p and Path(p).exists():
+            over[k] = p
+        elif p:
+            print(f"bdd_paths.{k} = {p} không tồn tại -> tự dò")
+    labels, dirs = locate_bdd(INPUT) if len(over) < 4 else ({}, {})
     slug = cfg.get("bdd_dataset")
     if (set(labels) != {"train", "val"} or set(dirs) != {"train", "val"}) and slug:
         # Trong Kaggle notebook, kagglehub tự gắn dataset vào notebook (panel Input) và đọc từ cache dùng chung.

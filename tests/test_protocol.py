@@ -22,7 +22,7 @@ def _toy(n_groups=60, per=5, seed=0):
 
 
 def test_selector_modules_label_free():
-    for f in ("select.py", "embed.py"):
+    for f in ("select.py", "embed.py", "algo1.py"):
         tree = ast.parse((SRC / f).read_text(encoding="utf-8"))
         mods = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         mods |= {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}

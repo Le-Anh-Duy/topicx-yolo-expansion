@@ -10,6 +10,18 @@ lượng supervision novel tương đương?
 
 **Chỉ chạy trên Kaggle.** Repo không giả định môi trường local.
 
+## Algo 1: `notebooks/06_algo1_eval.ipynb`
+
+Đặc tả: [`docs/algo_1_semantic_retrieval_history_diversity.md`](docs/algo_1_semantic_retrieval_history_diversity.md). Code: `src/topicx/algo1.py` (không dùng nhãn, có test).
+Notebook so sánh RANDOM, `ALGO1_TOPB`, `ALGO1_BATCH`, `ALGO1` (history-aware) và REPLAY_ONLY ở ngân sách 128 và 256 ảnh (8 và 16 vòng B = 16).
+Notebook in bảng theo từng vòng (separation, relevance, positive yield) và hiệu từng cặp theo §9.
+Các điểm đặc tả để ngỏ được chốt như sau:
+- τ: luật `dev_f1` trên dev.
+- Relevance: điểm topic CLIP (max theo crop).
+- v_x: CLIP mean-crop embedding.
+- H_0: rỗng.
+- Thiếu ứng viên: nhân đôi K, không hạ τ.
+
 ## Hai kịch bản
 
 | Notebook | Kịch bản | Base model | Finetune | Artifact |

@@ -14,7 +14,12 @@ novel_candidates: [rider, bus, motorcycle]
 # BDD100K trên Kaggle: dò /kaggle/input trước; không thấy thì tự gắn bdd_dataset bằng kagglehub (cần bật Internet).
 # Mirror phải có ảnh images/100k/{train,val} + nhãn JSON gốc của BDD (không phải bản đã đổi sang YOLO/COCO).
 bdd_dataset: solesensei/solesensei_bdd100k
-bdd_paths: {labels_train: null, labels_val: null, images_train: null, images_val: null}   # điền tay nếu mirror đặt tên khác
+# Đường dẫn của mirror solesensei/solesensei_bdd100k khi gắn qua Add Input. Đường dẫn không tồn tại -> bỏ qua, tự dò.
+bdd_paths:
+  labels_train: /kaggle/input/solesensei_bdd100k/bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_train.json
+  labels_val: /kaggle/input/solesensei_bdd100k/bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_val.json
+  images_train: /kaggle/input/solesensei_bdd100k/bdd100k/bdd100k/images/100k/train
+  images_val: /kaggle/input/solesensei_bdd100k/bdd100k/bdd100k/images/100k/val
 
 test_source: val             # final test lấy từ BDD val; dev / pool / base lấy từ BDD train (không giao nhau)
 sizes: {test: 5000, dev: 3000, pool: 20000, base: 15000}   # số ảnh (chia theo group, có thể vượt nhẹ)
@@ -33,7 +38,11 @@ topic_prompts:
   motorcycle: [a photo of a motorcycle on the road, a person riding a motorbike in traffic, a dashcam photo of a road with motorcycles, a scooter on the street]
   rider: [a person riding a bicycle or motorcycle, a cyclist on the road, a motorcyclist in traffic, a dashcam photo of people riding bikes]
 
-diverse: {min_dist: 0.1, max_rank_mult: 3}   # cosine distance tối thiểu; RETRIEVAL_DIVERSE chỉ xét top max_rank_mult*K
+diverse: {min_dist: 0.1, max_rank_mult: 3}
+
+# Algo 1 (docs/algo_1_semantic_retrieval_history_diversity.md): top-K mỗi vòng, B ảnh / vòng, ngưỡng τ.
+# tau: null (không lọc) | số | dev_f1 (τ tối đa F1 của score ≥ τ trên dev). Ngân sách (K của pipeline) phải là bội số của B.
+algo1: {K: 500, B: 16, tau: dev_f1}   # cosine distance tối thiểu; RETRIEVAL_DIVERSE chỉ xét top max_rank_mult*K
 
 yolo:
   init: yolo11n.pt            # COCO pretrained: COCO có bus/motorcycle/person/bicycle -> khái niệm đã gặp trong pretraining

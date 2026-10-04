@@ -236,12 +236,25 @@ class Pool:
             best = max(ap, key=ap.get)
             C.dump({"rule": "max dev ranking AP", "dev_ap": ap, "best": best, "prompts": [self.prompts[j] for j in cands[best]],
                     "dev_positive_rate": float(np.mean(y))}, C.out(self.cfg, "retrieval/prompt_selection.json"))
+            self._c["dev_scores"], self._c["dev_y"] = E.topic_scores(clip_dev, T[cands[best]]), y
             self._c["scores"] = E.topic_scores(self.clip(), T[cands[best]])
             np.save(C.out(self.cfg, "retrieval/pool_scores.npy"), self._c["scores"])
         return self._c["scores"]
 
     def order(self) -> list[int]:
         return S.rank(self.ids, self.topic_scores())
+
+    def tau(self, rule) -> float | None:
+        """Ngưỡng relevance: None (không lọc) | số cố định | "dev_f1" (chọn trên dev, cùng prompt/encoder với pool)."""
+        if rule is None or isinstance(rule, (int, float)):
+            return rule
+        assert rule == "dev_f1", rule
+        if "tau" not in self._c:
+            self.topic_scores()
+            r = M.tau_dev_f1(self._c["dev_scores"], self._c["dev_y"])
+            C.dump({"rule": rule, **r}, C.out(self.cfg, "retrieval/tau.json"))
+            self._c["tau"] = r["tau"]
+        return self._c["tau"]
 
 
 def p_random(pool: Pool, k: int, seed: int):
@@ -266,7 +279,19 @@ def p_retrieval_diverse(pool: Pool, k: int, seed: int):
     return ids, {"relax": f, "emb": "clip", "min_dist": d["min_dist"]}
 
 
-PROPOSERS = {"RANDOM": p_random, "DIVERSITY": p_diversity, "RETRIEVAL": p_retrieval, "RETRIEVAL_DIVERSE": p_retrieval_diverse}
+def make_algo1(mode: str):
+    """Algo 1 và đối chứng (§9): history = ALGO1, batch = ALGO1_BATCH, topb = ALGO1_TOPB.
+    relevance = điểm topic CLIP (max theo crop, prompt chọn trên dev); v_x = CLIP image embedding (trung bình crop)."""
+    def fn(pool: Pool, k: int, seed: int):
+        from . import embed as E
+        from .algo1 import algo1_select
+        a = pool.cfg["algo1"]
+        return algo1_select(pool.ids, pool.topic_scores(), E.image_level(pool.clip()), k, a["K"], a["B"], pool.tau(a["tau"]), mode)
+    return fn
+
+
+PROPOSERS = {"RANDOM": p_random, "DIVERSITY": p_diversity, "RETRIEVAL": p_retrieval, "RETRIEVAL_DIVERSE": p_retrieval_diverse,
+             "ALGO1": make_algo1("history"), "ALGO1_BATCH": make_algo1("batch"), "ALGO1_TOPB": make_algo1("topb")}
 
 
 def from_ranked_file(path: Path):
