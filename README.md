@@ -10,6 +10,14 @@ lượng supervision novel tương đương?
 
 **Chỉ chạy trên Kaggle.** Repo không giả định môi trường local.
 
+## Kết quả đã có
+
+| Ngày | Notebook | Thiết lập | Kết quả chính | Ghi chép |
+|---|---|---|---|---|
+| 2026-10-04 | NB00 | missing, novel = bus, K = 250, 3 seed | RETRIEVAL: AP50-95 bus 0,212 so với RANDOM 0,096 (+0,115 ở mọi seed); base mAP không giảm. Chưa tách được tác động của lượng supervision | [docs/results/2026-10-04_nb00_missing_bus_k250.md](docs/results/2026-10-04_nb00_missing_bus_k250.md) |
+
+Mỗi notebook kết thúc bằng `P.bundle(cfg, STAGE)`: zip các file json/csv/md vào `/kaggle/working/<art>_<stage>_results.zip`, không có weights, embedding hay nhãn oracle. Tải file zip ở tab Output để phân tích hoặc lưu vào `docs/results/`.
+
 ## Algo 1: `notebooks/06_algo1_eval.ipynb`
 
 Đặc tả: [`docs/algo_1_semantic_retrieval_history_diversity.md`](docs/algo_1_semantic_retrieval_history_diversity.md). Code: `src/topicx/algo1.py` (không dùng nhãn, có test).

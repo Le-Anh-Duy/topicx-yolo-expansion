@@ -92,6 +92,20 @@ def test_propose_plugin_boundary(tmp_path, monkeypatch):
         P.propose(cfg, {"ORACLE_POSITIVE": lambda pool, k, seed: pool.ids[:k]}, [0], [5], pool)
 
 
+def test_bundle_excludes_weights_and_oracle(tmp_path, monkeypatch):
+    import zipfile
+
+    from topicx import pipeline as P
+    monkeypatch.setattr(common, "WORK", tmp_path)
+    art = tmp_path / "art"
+    for rel in ("eval/report.md", "runs/s0_k250_RANDOM/result.json", "runs/s0_k250_RANDOM/last.pt",
+                "splits/oracle/pool_boxes.csv", "splits/public_boxes.csv", "retrieval/clip_pool.npy", "splits/meta.json"):
+        (art / rel).parent.mkdir(parents=True, exist_ok=True)
+        (art / rel).write_text("x")
+    names = set(zipfile.ZipFile(P.bundle({"art": "art"}, "uplift")).namelist())
+    assert names == {"eval/report.md", "runs/s0_k250_RANDOM/result.json", "splits/meta.json", "MANIFEST.txt"}
+
+
 def test_ranked_file_proposer(tmp_path):
     from topicx import pipeline as P
     f = tmp_path / "my-dataset" / "proposals" / "p026.txt"  # như /kaggle/input/<dataset>/proposals/

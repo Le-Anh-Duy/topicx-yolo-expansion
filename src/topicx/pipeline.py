@@ -647,3 +647,29 @@ Annotation là mô phỏng từ ground truth BDD. ORACLE_POSITIVE / RETRIEVAL_MA
     C.out(cfg, "eval/report.md").write_text(report, encoding="utf-8")
     return {"runs": df, "summary": summ, "uplift": uplift, "retrieval": ret, "missing": missing, "base_map": base_map,
             "base_novel_ap": base_novel}
+
+
+# ---------- 6. gói kết quả ----------
+
+BUNDLE_PATTERNS = [
+    "*/env.json", "splits/meta.json", "base/meta.json", "base/run/results.csv", "base/run/args.yaml",
+    "retrieval/*.json", "retrieval/*.jsonl", "retrieval/retrieval.csv", "selections/*.json",
+    "expand/*/expand_log.json", "train/oracle_log.jsonl",
+    "runs/*/result.json", "runs/*/results.csv", "runs/*/args.yaml",
+    "eval/*.json", "eval/runs.csv", "eval/report.md",
+]
+
+
+def bundle(cfg, stage: str) -> Path:
+    """Zip các file kết quả nhỏ (json/csv/md/yaml) vào /kaggle/working/<art>_<stage>_results.zip để tải ở tab Output.
+    Không gồm weights .pt, embedding .npy, nhãn oracle của pool và bảng box công khai (lớn, tái tạo được từ splits)."""
+    import zipfile
+    art = C.WORK / cfg["art"]
+    files = sorted({f for p in BUNDLE_PATTERNS for f in art.glob(p) if f.is_file()})
+    dst = C.WORK / f"{cfg['art']}_{stage}_results.zip"
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            z.write(f, f.relative_to(art).as_posix())
+        z.writestr("MANIFEST.txt", "\n".join(f.relative_to(art).as_posix() for f in files))
+    print(f"gói kết quả: {dst} ({len(files)} file, {dst.stat().st_size / 1e6:.2f} MB) -> tải ở tab Output")
+    return dst
