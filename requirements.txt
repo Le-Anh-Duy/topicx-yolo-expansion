@@ -3,3 +3,4 @@
 ultralytics>=8.3,<8.4
 open_clip_torch>=2.24
 tabulate
+kagglehub

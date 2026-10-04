@@ -225,6 +225,14 @@ def bdd_locations(cfg: dict) -> tuple[dict, dict]:
     from .common import INPUT
     over = cfg.get("bdd_paths") or {}
     labels, dirs = locate_bdd(INPUT) if not all(over.get(k) for k in ("labels_train", "labels_val", "images_train", "images_val")) else ({}, {})
+    slug = cfg.get("bdd_dataset")
+    if (set(labels) != {"train", "val"} or set(dirs) != {"train", "val"}) and slug:
+        # Trong Kaggle notebook, kagglehub tự gắn dataset vào notebook (panel Input) và đọc từ cache dùng chung.
+        import kagglehub
+        root = Path(kagglehub.dataset_download(slug))
+        print(f"kagglehub: {slug} -> {root}")
+        found_l, found_d = locate_bdd(root)
+        labels, dirs = {**found_l, **labels}, {**found_d, **dirs}
     for s in ("train", "val"):
         if over.get(f"labels_{s}"):
             labels[s] = Path(over[f"labels_{s}"])

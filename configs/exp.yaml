@@ -11,8 +11,10 @@ classes: [pedestrian, rider, car, truck, bus, motorcycle, bicycle, traffic light
 alias: {person: pedestrian, motor: motorcycle, bike: bicycle}   # nhãn BDD 2018 -> tên 2020
 novel_candidates: [rider, bus, motorcycle]
 
-# Đường dẫn BDD100K trên Kaggle. null = tự dò /kaggle/input. Mirror đặt tên khác thì điền tay.
-bdd_paths: {labels_train: null, labels_val: null, images_train: null, images_val: null}
+# BDD100K trên Kaggle: dò /kaggle/input trước; không thấy thì tự gắn bdd_dataset bằng kagglehub (cần bật Internet).
+# Mirror phải có ảnh images/100k/{train,val} + nhãn JSON gốc của BDD (không phải bản đã đổi sang YOLO/COCO).
+bdd_dataset: solesensei/solesensei_bdd100k
+bdd_paths: {labels_train: null, labels_val: null, images_train: null, images_val: null}   # điền tay nếu mirror đặt tên khác
 
 test_source: val             # final test lấy từ BDD val; dev / pool / base lấy từ BDD train (không giao nhau)
 sizes: {test: 5000, dev: 3000, pool: 20000, base: 15000}   # số ảnh (chia theo group, có thể vượt nhẹ)
