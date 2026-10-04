@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from tqdm.auto import tqdm
 
 IMAGENET = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
@@ -43,7 +44,7 @@ def _run(paths, tf, fn, batch: int, workers: int = 4) -> np.ndarray:
     dl = torch.utils.data.DataLoader(_Images(paths, tf), batch_size=batch, num_workers=workers)
     dev = device()
     out = []
-    for x in dl:
+    for x in tqdm(dl, desc="embed"):
         with torch.autocast("cuda", enabled=dev == "cuda"):
             out.append(fn(x.to(dev)).float().cpu().numpy())
     return np.concatenate(out)

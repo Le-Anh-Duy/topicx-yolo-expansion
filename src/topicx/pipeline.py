@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from tqdm.auto import tqdm
 
 from . import common as C
 from . import data as D
@@ -88,6 +89,65 @@ def load_bdd(cfg):
     sizes = {Image.open(paths[i]).size for i in images.image.sample(min(200, len(images)), random_state=0)}
     assert sizes == {tuple(cfg["img_wh"])}, sizes
     return images, boxes, paths
+
+
+def health_check(cfg, n_sample: int = 20):
+    """Kiểm nhanh (vài giây, không đọc cả file nhãn) xem đang đọc đúng BDD100K. Trả (bảng kiểm, ảnh mẫu có vẽ box).
+    Lỗi nghiêm trọng -> AssertionError kèm bảng đã in."""
+    import json
+    from PIL import Image, ImageDraw
+    labels, dirs = D.bdd_locations(cfg)
+    rows, sample = [], None
+    expect_imgs = {"train": 70000, "val": 10000}
+    for s in ("train", "val"):
+        names = [f for f in os.listdir(dirs[s]) if f.endswith(".jpg")]
+        rows.append({"kiểm": f"ảnh {s}", "giá trị": f"{len(names)} jpg trong {dirs[s]}", "ok": len(names) >= 0.9 * expect_imgs[s],
+                     "kỳ vọng": f"~{expect_imgs[s]}"})
+        size_gb = labels[s].stat().st_size / 1e9
+        rows.append({"kiểm": f"file nhãn {s}", "giá trị": f"{labels[s].name}, {size_gb:.2f} GB", "ok": size_gb > 0.01,
+                     "kỳ vọng": "JSON nhãn gốc BDD (hàng trăm MB)"})
+        # đọc record đầu tiên mà không load cả file
+        with open(labels[s], "rb") as f:
+            head = f.read(8_000_000).decode("utf-8", errors="ignore")
+        try:
+            rec, _ = json.JSONDecoder().raw_decode(head, head.index("{"))
+            box_labels = [lab for lab in rec.get("labels") or [] if lab.get("box2d")]
+            fmt_ok = isinstance(rec.get("name"), str) and "attributes" in rec and "labels" in rec
+        except (ValueError, KeyError) as e:
+            rec, box_labels, fmt_ok = None, [], False
+            print(f"không đọc được record đầu của {labels[s]}: {e}")
+        rows.append({"kiểm": f"định dạng nhãn {s}", "giá trị": f"record đầu: {rec.get('name') if rec else None}, "
+                     f"{len(box_labels)} box2d, category: {sorted({lab['category'] for lab in box_labels})[:6]}",
+                     "ok": fmt_ok, "kỳ vọng": "name + attributes + labels[].box2d"})
+        known = set(cfg["classes"]) | set(cfg["alias"]) | {"train"}
+        cats = {lab["category"] for lab in box_labels}
+        rows.append({"kiểm": f"category {s}", "giá trị": f"lạ: {sorted(cats - known)}", "ok": not cats - known - {"other vehicle", "other person", "trailer"},
+                     "kỳ vọng": "nằm trong classes/alias của config"})
+        if rec:
+            p = Path(dirs[s]) / rec["name"]
+            ok = p.exists()
+            wh = Image.open(p).size if ok else None
+            rows.append({"kiểm": f"ảnh của record đầu {s}", "giá trị": f"{p.name} tồn tại={ok}, size={wh}", "ok": ok and wh == tuple(cfg["img_wh"]),
+                         "kỳ vọng": f"tồn tại, {tuple(cfg['img_wh'])}"})
+            if ok and sample is None:
+                img = Image.open(p).convert("RGB")
+                dr = ImageDraw.Draw(img)
+                for lab in box_labels:
+                    b = lab["box2d"]
+                    dr.rectangle([b["x1"], b["y1"], b["x2"], b["y2"]], outline=(255, 0, 0), width=3)
+                    dr.text((b["x1"] + 3, b["y1"] + 2), lab["category"], fill=(255, 255, 0))
+                sample = img
+        # tên ảnh ngẫu nhiên đúng dạng <ride>-<clip>.jpg (dùng làm group)
+        pick = names[:: max(1, len(names) // n_sample)][:n_sample]
+        good = sum(len(n[:-4].split("-")) == 2 for n in pick)
+        rows.append({"kiểm": f"tên ảnh {s}", "giá trị": f"{good}/{len(pick)} dạng <ride>-<clip>.jpg, vd {pick[:2]}", "ok": good == len(pick),
+                     "kỳ vọng": "group theo ride chia tập được"})
+    rep = pd.DataFrame(rows)
+    with pd.option_context("display.max_colwidth", 200):
+        print(rep.to_string(index=False))
+    assert rep.ok.all(), "health check có mục FAIL (xem bảng trên)"
+    print("health check OK: đúng BDD100K 100k + nhãn JSON gốc")
+    return rep, sample
 
 
 def eda(cfg, images, boxes) -> dict:
@@ -330,6 +390,7 @@ def propose(cfg, proposers: dict, seeds, ks, pool: Pool) -> None:
                 p = _sel(cfg, s, k, name)
                 if p.exists():
                     continue
+                print(f"proposal {name} seed={s} K={k}", flush=True)
                 t0 = time.time()
                 with no_oracle_access():
                     r = fn(pool, k, 1000 + s)
@@ -433,6 +494,9 @@ def train_branches(cfg, branches, seeds, ks) -> list[str]:
                     new_ids, new_boxes = m["ids"] + pad, pd.concat([bx, pub[pub.image.isin(set(pad))]])
                 ids = replay + new_ids
                 assert len(ids) == len(replay) + k and len(set(ids)) == len(ids), run
+                done = sum((_art(cfg, f"runs/{f's{a}_k{b_}_{c}'}") / "result.json").exists() for a in seeds for b_ in ks for c in branches)
+                print(f"=== [{done + 1}/{len(seeds) * len(ks) * len(branches)}] train {run} "
+                      f"(ước tính {1.3 * per * (len(replay) + k) * ft['epochs'] / 60:.0f} phút) ===", flush=True)
                 tr = D.write_yolo(yd / run, ids, pd.concat([pub[pub.image.isin(set(replay))], new_boxes]), names, paths, cfg["img_wh"])
                 t = Y.train(exp, D.write_data_yaml(yd / f"{run}.yaml", names, tr, dev_full), dst, ft, seed=s, imgsz=imgsz)
                 nb = new_boxes[new_boxes.image.isin(set(new_ids))]
@@ -481,7 +545,7 @@ def evaluate(cfg, branches, seeds, ks) -> dict:
     base_map = mean_ap(base_ap, base_names)
     rc = f"novel_recall@{E['conf']}"
     rows = []
-    for res in sorted(_art(cfg, "runs").glob("*/result.json")):
+    for res in tqdm(sorted(_art(cfg, "runs").glob("*/result.json")), desc="đánh giá run"):
         r, run = C.load(res), res.parent.name
         ep = C.out(cfg, f"eval/{run}.json")
         if not ep.exists():

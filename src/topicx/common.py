@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import yaml
+from tqdm.auto import tqdm
 
 REPO = Path(__file__).resolve().parents[2]
 WORK = Path(os.environ.get("TOPICX_WORK", "/kaggle/working"))
@@ -46,7 +47,7 @@ def sync_inputs(cfg: dict) -> int:
     Nhờ vậy output mỗi version chứa đủ kết quả cũ + mới, chạy lại notebook là chạy tiếp phần còn thiếu."""
     dst, n = WORK / cfg["art"], 0
     for src in sorted({p for d in ("*", "*/*", "*/*/*") for p in INPUT.glob(f"{d}/{cfg['art']}")}):
-        for f in src.rglob("*"):
+        for f in tqdm(list(src.rglob("*")), desc=f"copy {src.parent.name}", leave=False):
             t = dst / f.relative_to(src)
             if f.is_file() and not t.exists():
                 t.parent.mkdir(parents=True, exist_ok=True)

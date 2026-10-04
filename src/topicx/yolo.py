@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from tqdm.auto import tqdm
 
 
 def expand_head(base_pt: Path, out_pt: Path, names: list[str], seed: int) -> dict:
@@ -130,7 +131,7 @@ def recall_at_conf(weights: Path, ids: list[str], paths: dict, gt: pd.DataFrame,
     by = {k: v for k, v in g.groupby("image")}
     rows = []
     want = [i for i in ids if i in by]
-    for s in range(0, len(want), batch):
+    for s in tqdm(range(0, len(want), batch), desc=f"recall {cls}", leave=False):
         chunk = want[s:s + batch]
         for i, r in zip(chunk, m.predict([str(paths[i]) for i in chunk], conf=conf, imgsz=imgsz, verbose=False)):
             keep = r.boxes.cls.cpu().numpy().astype(int) == cid

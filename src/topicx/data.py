@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from tqdm.auto import tqdm
 
 BOX_COLS = ["image", "cls", "x1", "y1", "x2", "y2"]
 SPLITS = ("test", "dev", "pool", "base")
@@ -42,11 +43,12 @@ def locate_bdd(root: Path, max_depth: int = 9) -> tuple[dict, dict]:
 
 def load_labels(path: Path, src: str, alias: dict, keep: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Đọc JSON nhãn BDD (định dạng 2018 hoặc det_20). Trả (images, boxes); chỉ giữ box2d của class trong `keep`."""
+    print(f"đọc {path} ({Path(path).stat().st_size / 1e9:.2f} GB, json.load không có tiến trình, ~1-3 phút)...", flush=True)
     with open(path, encoding="utf-8") as f:
         recs = json.load(f)
     keep = set(keep)
     imgs, boxes = [], []
-    for r in recs:
+    for r in tqdm(recs, desc=f"parse nhãn {src}"):
         a = r.get("attributes") or {}
         imgs.append((r["name"], src, a.get("timeofday", "undefined"), a.get("weather", "undefined"), a.get("scene", "undefined")))
         for lab in r.get("labels") or []:
@@ -160,7 +162,7 @@ def md5_duplicates(splits: dict, paths: dict[str, Path]) -> list[tuple]:
     """Exact duplicate (md5 nội dung file) xuất hiện ở hơn một tập."""
     seen = {}
     for s, ids in splits.items():
-        for i in ids:
+        for i in tqdm(ids, desc=f"md5 {s}"):
             seen.setdefault(hashlib.md5(Path(paths[i]).read_bytes()).hexdigest(), []).append((s, i))
     return [v for v in seen.values() if len({s for s, _ in v}) > 1]
 
@@ -186,7 +188,7 @@ def write_yolo(dst: Path, ids: list[str], boxes: pd.DataFrame, names: list[str],
     b = boxes[boxes.image.isin(set(ids)) & boxes.cls.isin(idx)]
     by = {k: g for k, g in b.groupby("image")}
     w, h = img_wh
-    for i in ids:
+    for i in tqdm(ids, desc=f"YOLO {dst.name}", leave=False):
         os.symlink(paths[i], dst / "images" / i)
         g = by.get(i)
         lines = [] if g is None else [yolo_line(idx[r.cls], r.x1, r.y1, r.x2, r.y2, w, h) for r in g.itertuples()]
