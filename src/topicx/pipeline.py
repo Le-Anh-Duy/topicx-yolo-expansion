@@ -17,6 +17,7 @@ Proposer chạy trong `no_oracle_access()` và chỉ thấy `Pool`: id ảnh, đ
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import time
 from pathlib import Path
@@ -66,14 +67,20 @@ def _oracle(cfg, stage) -> OracleStore:
 # ---------- 1. dữ liệu + chia tập ----------
 
 def load_bdd(cfg):
+    t0 = time.time()
     labels, dirs = D.bdd_locations(cfg)
     print("nhãn:", labels, "\nảnh:", dirs)
-    parts = [D.load_labels(labels[s], s, cfg["alias"], cfg["classes"]) for s in ("train", "val")]
+    parts = []
+    for s in ("train", "val"):
+        parts.append(D.load_labels(labels[s], s, cfg["alias"], cfg["classes"]))
+        print(f"[{time.time() - t0:.0f}s] đọc nhãn {s}: {len(parts[-1][0])} ảnh")
     images = pd.concat([p[0] for p in parts], ignore_index=True)
     boxes = pd.concat([p[1] for p in parts], ignore_index=True)
     assert images.image.is_unique
     paths = D.image_paths(images, dirs)
-    missing = {i for i in images.image if not paths[i].exists()}
+    on_disk = {s: set(os.listdir(d)) for s, d in dirs.items()}  # một listdir mỗi thư mục, nhanh hơn exists() từng file
+    missing = {i for i, s in zip(images.image, images.src) if i not in on_disk[s]}
+    print(f"[{time.time() - t0:.0f}s] kiểm file ảnh xong")
     print(f"{len(images)} ảnh có nhãn, {len(missing)} không có file ảnh -> bỏ")
     images = images[~images.image.isin(missing)].reset_index(drop=True)
     boxes = boxes[boxes.image.isin(set(images.image))].reset_index(drop=True)
@@ -107,6 +114,8 @@ def prepare_splits(cfg, novel: str, reason: str, images=None, boxes=None, paths=
     has_novel = set(boxes.image[boxes.cls == novel])
     splits = D.make_splits(images, has_novel, cfg["sizes"], cfg["seed_split"], cfg.get("test_source"), _n_weak(cfg))
     report = D.check_splits(splits, images, has_novel, _n_weak(cfg))
+    if cfg["md5_check"]:
+        print("kiểm md5 exact duplicate giữa các tập (đọc toàn bộ ảnh, có thể mất hàng chục phút)...")
     dups = D.md5_duplicates(splits, paths) if cfg["md5_check"] else None
     assert not dups, dups[:5]
     base_names, names = D.class_names(cfg["classes"], novel)
