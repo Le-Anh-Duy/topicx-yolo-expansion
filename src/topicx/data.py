@@ -1,0 +1,183 @@
+"""BDD100K: tìm file trên Kaggle, đọc nhãn, EDA, chia tập không giao nhau, kiểm tra, xuất định dạng YOLO."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import yaml
+
+BOX_COLS = ["image", "cls", "x1", "y1", "x2", "y2"]
+SPLITS = ("test", "dev", "pool", "base")
+
+
+# ---------- đọc dữ liệu ----------
+
+def locate_bdd(root: Path, max_depth: int = 7) -> tuple[dict, dict]:
+    """Tìm file nhãn {train,val} và thư mục ảnh 100k/{train,val}; không đi sâu vào thư mục ảnh."""
+    labels, images = {}, {}
+    root = Path(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for f in filenames:
+            for s in ("train", "val"):
+                if f in (f"bdd100k_labels_images_{s}.json", f"det_{s}.json"):
+                    labels.setdefault(s, Path(dirpath) / f)
+        if len(filenames) > 2000:
+            name = Path(dirpath).name
+            if name in ("train", "val") and "100k" in dirpath and any(f.endswith(".jpg") for f in filenames[:50]):
+                images.setdefault(name, Path(dirpath))
+            dirnames[:] = []
+        if len(Path(dirpath).relative_to(root).parts) >= max_depth:
+            dirnames[:] = []
+    return labels, images
+
+
+def load_labels(path: Path, src: str, alias: dict, keep: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Đọc JSON nhãn BDD (định dạng 2018 hoặc det_20). Trả (images, boxes); chỉ giữ box2d của class trong `keep`."""
+    with open(path, encoding="utf-8") as f:
+        recs = json.load(f)
+    keep = set(keep)
+    imgs, boxes = [], []
+    for r in recs:
+        a = r.get("attributes") or {}
+        imgs.append((r["name"], src, a.get("timeofday", "undefined"), a.get("weather", "undefined"), a.get("scene", "undefined")))
+        for lab in r.get("labels") or []:
+            b, c = lab.get("box2d"), alias.get(lab.get("category"), lab.get("category"))
+            if b and c in keep:
+                boxes.append((r["name"], c, b["x1"], b["y1"], b["x2"], b["y2"]))
+    images = pd.DataFrame(imgs, columns=["image", "src", "timeofday", "weather", "scene"])
+    # Tên ảnh BDD = tên video "<ride>-<clip>"; các clip cùng phần đầu thường từ cùng một lần ghi -> dùng làm group.
+    images["group"] = images.image.str.split("-").str[0]
+    return images, pd.DataFrame(boxes, columns=BOX_COLS)
+
+
+def image_paths(images: pd.DataFrame, image_dirs: dict) -> dict[str, Path]:
+    return {i: Path(image_dirs[s]) / i for i, s in zip(images.image, images.src)}
+
+
+# ---------- EDA ----------
+
+def size_bucket(boxes: pd.DataFrame) -> pd.Series:
+    """COCO: small < 32², medium < 96², large còn lại (theo pixel ảnh gốc)."""
+    area = (boxes.x2 - boxes.x1) * (boxes.y2 - boxes.y1)
+    return pd.cut(area, [-np.inf, 32 ** 2, 96 ** 2, np.inf], labels=["small", "medium", "large"]).astype(str)
+
+
+def class_stats(images: pd.DataFrame, boxes: pd.DataFrame) -> pd.DataFrame:
+    b = boxes.assign(size=size_bucket(boxes)).merge(images[["image", "timeofday"]], on="image")
+    g = b.groupby("cls")
+    t = pd.DataFrame({"n_images": g.image.nunique(), "n_instances": g.size()})
+    t = t.join(pd.crosstab(b.cls, b["size"], normalize="index").add_prefix("frac_"))
+    t["frac_night"] = g.timeofday.apply(lambda s: (s == "night").mean())
+    return t.sort_values("n_instances")
+
+
+def removal_cost(boxes: pd.DataFrame, candidates: list[str]) -> pd.DataFrame:
+    """Tỉ lệ instance của mỗi class bị mất khỏi base train nếu loại mọi ảnh chứa novel candidate (co-occurrence)."""
+    total = boxes.groupby("cls").size()
+    rows = {}
+    for c in candidates:
+        has = set(boxes.image[boxes.cls == c])
+        rows[c] = boxes[boxes.image.isin(has)].groupby("cls").size().reindex(total.index, fill_value=0) / total
+    return pd.DataFrame(rows).T.round(3)
+
+
+def class_names(classes: list[str], novel: str) -> tuple[list[str], list[str]]:
+    """Base giữ thứ tự config (id 0..B-1); novel luôn là id cuối B."""
+    assert novel in classes, novel
+    base = [c for c in classes if c != novel]
+    return base, base + [novel]
+
+
+# ---------- chia tập ----------
+
+def make_splits(images: pd.DataFrame, has_novel: set[str], sizes: dict, seed: int) -> dict[str, list[str]]:
+    """Chia theo group (không group nào nằm ở 2 tập). test/dev/pool lấy nguyên group (giữ cả ảnh positive và negative);
+    base lấy từ các group còn lại nhưng bỏ ảnh có novel class."""
+    groups = images.groupby("group").image.apply(sorted)
+    order = np.random.default_rng(seed).permutation(sorted(groups.index))
+    out = {s: [] for s in SPLITS}
+    it = iter(order)
+    for s in ("test", "dev", "pool"):
+        while len(out[s]) < sizes[s]:
+            out[s] += groups[next(it)]
+    for g in it:
+        if len(out["base"]) >= sizes["base"]:
+            break
+        out["base"] += [i for i in groups[g] if i not in has_novel]
+    return out
+
+
+def check_splits(splits: dict, images: pd.DataFrame, has_novel: set[str]) -> dict:
+    """Kiểm tra không giao nhau theo ảnh và group; base không có novel; pool có cả positive và negative."""
+    group = dict(zip(images.image, images.group))
+    names = list(splits)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            assert not set(splits[a]) & set(splits[b]), f"ảnh trùng giữa {a} và {b}"
+            ga, gb = {group[x] for x in splits[a]}, {group[x] for x in splits[b]}
+            assert not ga & gb, f"group trùng giữa {a} và {b}"
+    assert not set(splits["base"]) & has_novel, "base train chứa ảnh có novel class"
+    n_pos = len(set(splits["pool"]) & has_novel)
+    assert 0 < n_pos < len(splits["pool"]), "pool phải có cả ảnh positive và negative"
+    return {s: {"n_images": len(v), "n_novel_images": len(set(v) & has_novel)} for s, v in splits.items()}
+
+
+def md5_duplicates(splits: dict, paths: dict[str, Path]) -> list[tuple]:
+    """Exact duplicate (md5 nội dung file) xuất hiện ở hơn một tập."""
+    seen = {}
+    for s, ids in splits.items():
+        for i in ids:
+            seen.setdefault(hashlib.md5(Path(paths[i]).read_bytes()).hexdigest(), []).append((s, i))
+    return [v for v in seen.values() if len({s for s, _ in v}) > 1]
+
+
+# ---------- YOLO ----------
+
+def yolo_line(c: int, x1, y1, x2, y2, w: int, h: int) -> str | None:
+    x1, x2 = np.clip([x1, x2], 0, w)
+    y1, y2 = np.clip([y1, y2], 0, h)
+    if x2 - x1 <= 1 or y2 - y1 <= 1:
+        return None
+    return f"{c} {(x1 + x2) / 2 / w:.6f} {(y1 + y2) / 2 / h:.6f} {(x2 - x1) / w:.6f} {(y2 - y1) / h:.6f}"
+
+
+def write_yolo(dst: Path, ids: list[str], boxes: pd.DataFrame, names: list[str], paths: dict, img_wh) -> Path:
+    """Thư mục YOLO: images/ là symlink tới /kaggle/input (read-only), labels/ ghi theo `names`.
+    Box của class ngoài `names` bị bỏ (vd. novel khi xuất theo base taxonomy). Xoá thư mục cũ trước."""
+    dst = Path(dst)
+    shutil.rmtree(dst, ignore_errors=True)
+    (dst / "images").mkdir(parents=True)
+    (dst / "labels").mkdir()
+    idx = {n: i for i, n in enumerate(names)}
+    b = boxes[boxes.image.isin(set(ids)) & boxes.cls.isin(idx)]
+    by = {k: g for k, g in b.groupby("image")}
+    w, h = img_wh
+    for i in ids:
+        os.symlink(paths[i], dst / "images" / i)
+        g = by.get(i)
+        lines = [] if g is None else [yolo_line(idx[r.cls], r.x1, r.y1, r.x2, r.y2, w, h) for r in g.itertuples()]
+        (dst / "labels" / (Path(i).stem + ".txt")).write_text("\n".join(x for x in lines if x))
+    return dst
+
+
+def write_data_yaml(path: Path, names: list[str], train: Path, val: Path, test: Path | None = None) -> Path:
+    d = {"train": str(Path(train) / "images"), "val": str(Path(val) / "images"), "names": dict(enumerate(names))}
+    if test is not None:
+        d["test"] = str(Path(test) / "images")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(d, allow_unicode=True), encoding="utf-8")
+    return path
+
+
+def split_paths(cfg: dict) -> dict[str, Path]:
+    """Đường dẫn ảnh của mọi ảnh trong các tập (từ splits/image_src.csv + thư mục BDD đang gắn)."""
+    from .common import INPUT, find
+    src = pd.read_csv(find(cfg, "splits/image_src.csv"))
+    _, dirs = locate_bdd(INPUT)
+    return image_paths(src, dirs)

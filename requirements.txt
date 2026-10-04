@@ -1,0 +1,5 @@
+# torch, torchvision, numpy, pandas, pyyaml, pytest có sẵn trên Kaggle. Ghi phiên bản thật vào env.json mỗi notebook;
+# sau smoke run thành công thì pin chính xác các dòng dưới.
+ultralytics>=8.3,<8.4
+open_clip_torch>=2.24
+tabulate

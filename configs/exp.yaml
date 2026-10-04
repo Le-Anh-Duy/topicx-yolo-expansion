@@ -1,0 +1,49 @@
+# Cấu hình duy nhất của thí nghiệm. Novel class KHÔNG đặt ở đây: chốt ở NB1 sau EDA, lưu vào splits/meta.json.
+
+seed_split: 0                 # seed chia tập (một base model chung)
+seeds: [0, 1, 2]              # seed s: seed chọn mẫu = 1000 + s, seed train = s; mọi nhánh trong s dùng chung expanded init
+ks: [250, 1000]               # số ảnh annotate mỗi nhánh
+branches: [RANDOM, DIVERSITY, RETRIEVAL, RETRIEVAL_DIVERSE, ORACLE_POSITIVE, REPLAY_ONLY]
+analysis_branches: []         # thêm RETRIEVAL_MATCHED để chạy phân tích supervision tương đương (dùng nhãn ẩn)
+
+# Taxonomy đích (thứ tự cố định). 'train' và các class khác của BDD bị bỏ (coi là nền) ở MỌI tập.
+classes: [pedestrian, rider, car, truck, bus, motorcycle, bicycle, traffic light, traffic sign]
+alias: {person: pedestrian, motor: motorcycle, bike: bicycle}   # nhãn BDD 2018 -> tên 2020
+novel_candidates: [rider, bus, motorcycle]
+
+sizes: {test: 5000, dev: 3000, pool: 20000, base: 15000}   # số ảnh (chia theo group, có thể vượt nhẹ)
+replay: 5000                  # replay set lấy từ base train, chung cho mọi nhánh / seed
+img_wh: [1280, 720]           # NB1 kiểm trên mẫu ảnh
+md5_check: true               # kiểm exact duplicate giữa các tập (đọc toàn bộ file, vài phút)
+
+clip: {model: ViT-B-32, pretrained: laion2b_s34b_b79k, batch: 128}
+dinov2: {model: dinov2_vits14, batch: 128}   # embedding cho nhánh DIVERSITY (giống P-026: DINOv2-S)
+
+# Các cách diễn đạt khai báo trước cho mỗi topic. NB3 chọn trên dev theo luật cố định:
+# cấu hình (từng prompt hoặc ensemble = trung bình text embedding) có ranking AP cao nhất trên dev.
+topic_prompts:
+  bus: [a photo of a bus on the street, a city bus in traffic, a dashcam photo of a road with a bus, a large public transit bus]
+  motorcycle: [a photo of a motorcycle on the road, a person riding a motorbike in traffic, a dashcam photo of a road with motorcycles, a scooter on the street]
+  rider: [a person riding a bicycle or motorcycle, a cyclist on the road, a motorcyclist in traffic, a dashcam photo of people riding bikes]
+
+diverse: {min_dist: 0.1, max_rank_mult: 3}   # cosine distance tối thiểu; RETRIEVAL_DIVERSE chỉ xét top max_rank_mult*K
+
+yolo:
+  init: yolo11n.pt            # COCO pretrained: COCO có bus/motorcycle/person/bicycle -> khái niệm đã gặp trong pretraining
+  imgsz: 640
+  base: {epochs: 30, batch: 32, optimizer: SGD, lr0: 0.01, workers: 4, plots: false}
+  finetune: {epochs: 20, batch: 32, optimizer: SGD, lr0: 0.002, warmup_epochs: 1, workers: 4, plots: false, val: false}
+  weights: last               # dùng last.pt (cùng số update) cho expand và đánh giá
+
+eval: {conf: 0.25, iou: 0.5, min_instances_subset: 50, batch: 32}
+kaggle: {time_budget_h: 11}   # NB4 không bắt đầu run mới nếu ước tính vượt ngân sách
+
+smoke:                        # SMOKE=True trong notebook: chạy cả pipeline thật trên tập nhỏ
+  seeds: [0]
+  ks: [100]
+  sizes: {test: 300, dev: 200, pool: 600, base: 600}
+  replay: 200
+  md5_check: false
+  yolo:
+    base: {epochs: 1, batch: 16}
+    finetune: {epochs: 1, batch: 16}
