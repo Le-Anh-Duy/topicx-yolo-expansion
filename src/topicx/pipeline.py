@@ -1,17 +1,13 @@
-"""Các bước của pipeline uplift; notebook chỉ gọi các hàm ở đây. Bước nào đã có kết quả (trong /kaggle/working sau
-`common.sync_inputs`) thì bỏ qua, nên chạy lại notebook = chạy tiếp phần còn thiếu.
+"""Harness đánh giá (block 1 phần chia tập, block 3 finetune + đánh giá). Không chứa logic chọn mẫu: tập frame id đến từ
+block 2 (`topicx.proposals` + `src.rav`) hoặc từ P-026 / nơi khác, dạng `proposals/<tên>/s<seed>_k<K>/export.csv`.
+Bước nào đã có kết quả (trong /kaggle/working sau `common.sync_inputs`) thì bỏ qua → chạy lại notebook = chạy tiếp.
 
-    splits -> base model -> proposal (K ảnh từ pool, không nhãn) -> chốt manifest -> oracle trả nhãn BDD
-    -> mở rộng head + finetune (replay + K) -> đánh giá trên final test -> uplift so với RANDOM cùng seed, cùng K
+    splits -> base model -> [export.csv của từng cách chọn] -> chốt manifest -> oracle trả nhãn BDD
+    -> (mở rộng head) + finetune (replay + K) -> đánh giá trên final test -> so với base model, `random` cùng seed / K, REPLAY_ONLY
 
 Kịch bản (`cfg["scenario"]`):
   - missing: base train không có ảnh novel; base model chỉ biết base classes; mở rộng head trước khi finetune.
   - weak: base train có đúng `weak_novel_images` ảnh novel; base model biết đủ class (novel yếu); finetune thẳng từ base.
-
-Cắm thuật toán proposal mới:
-  - hàm `fn(pool: Pool, k: int, seed: int) -> list[str]` (hoặc `(list[str], meta: dict)`), truyền vào `propose()`;
-  - hoặc file xếp hạng (txt mỗi dòng một id ảnh pool, hoặc csv có cột `image`) -> `from_ranked_file()` / `discover_ranked_files()`.
-Proposer chạy trong `no_oracle_access()` và chỉ thấy `Pool`: id ảnh, đường dẫn ảnh, topic, embedding. Không có nhãn pool.
 """
 
 from __future__ import annotations
@@ -30,10 +26,10 @@ from . import common as C
 from . import data as D
 from . import metrics as M
 from . import select as S
-from .oracle import OracleStore, no_oracle_access
+from .oracle import OracleStore
 
 CONTROL = "REPLAY_ONLY"
-PRIVILEGED = ("ORACLE_POSITIVE", "RETRIEVAL_MATCHED")
+PRIVILEGED = ("ORACLE_POSITIVE",)
 
 
 def _art(cfg, rel) -> Path:
@@ -277,208 +273,80 @@ def estimate_hours(cfg, n_branches: int, seeds, ks) -> float:
     return 1.3 * sum(per * (cfg["replay"] + k) * cfg["yolo"]["finetune"]["epochs"] for k in ks) * n_branches * len(seeds) / 3600
 
 
-# ---------- 3. proposal ----------
+# ---------- 3. nhận kết quả proposal (block 2 / P-026 / nơi khác) ----------
 
-class Pool:
-    """Thứ proposer được thấy: `ids` (ảnh pool), `paths[id]`, `topic` + `prompts`, embedding tính lười (cache vào retrieval/).
-    Không chứa nhãn pool."""
-
-    def __init__(self, cfg):
-        self.cfg = cfg
-        self.topic = _meta(cfg)["novel"]
-        self.prompts = cfg["topic_prompts"][self.topic]
-        self.ids = C.read_ids(_art(cfg, "splits/pool_ids.txt"))
-        self.paths = D.split_paths(cfg)
-        self._c: dict = {}
-
-    def _cached(self, name, fn):
-        if name not in self._c:
-            p = C.out(self.cfg, f"retrieval/{name}.npy")
-            if not p.exists():
-                np.save(p, fn())
-            self._c[name] = np.load(p)
-        return self._c[name]
-
-    def _clip_model(self):
-        if "model" not in self._c:
-            from . import embed as E
-            self._c["model"] = E.load_clip(self.cfg["clip"]["model"], self.cfg["clip"]["pretrained"])
-            import open_clip
-            C.dump({"clip": self.cfg["clip"], "open_clip": open_clip.__version__, "preprocess": str(self._c["model"][1]),
-                    "crops": "3 crop vuông trái/giữa/phải", "score": "max_crop cos(img, mean text emb)",
-                    "dinov2": self.cfg["dinov2"], "dinov2_preprocess": "resize 224x392, ImageNet norm"},
-                   C.out(self.cfg, "retrieval/embed_meta.json"))
-        return self._c["model"]
-
-    def clip(self) -> np.ndarray:
-        """(N, 3 crop, D) CLIP image embedding, L2-normalized."""
-        from . import embed as E
-        return self._cached("clip_pool", lambda: E.clip_images([self.paths[i] for i in self.ids], *self._clip_model()[:2],
-                                                              self.cfg["clip"]["batch"]))
-
-    def dino(self) -> np.ndarray:
-        """(N, D) DINOv2-S embedding, L2-normalized."""
-        from . import embed as E
-        return self._cached("dino_pool", lambda: E.dinov2_images([self.paths[i] for i in self.ids],
-                                                                self.cfg["dinov2"]["model"], self.cfg["dinov2"]["batch"]))
-
-    def topic_scores(self) -> np.ndarray:
-        """Điểm CLIP với topic. Prompt chọn trên dev (nhãn dev công khai) theo luật cố định: AP ranking cao nhất."""
-        from . import embed as E
-        if "scores" not in self._c:
-            m, pre, tok = self._clip_model()
-            dev = C.read_ids(_art(self.cfg, "splits/dev_ids.txt"))
-            clip_dev = self._cached("clip_dev", lambda: E.clip_images([self.paths[i] for i in dev], m, pre, self.cfg["clip"]["batch"]))
-            pub = pd.read_csv(_art(self.cfg, "splits/public_boxes.csv"))
-            dev_pos = set(pub.image[pub.cls == self.topic])
-            y = [i in dev_pos for i in dev]
-            T = E.clip_texts(self.prompts, m, tok)
-            cands = {f"single:{p}": [j] for j, p in enumerate(self.prompts)} | {"ensemble:all": list(range(len(self.prompts)))}
-            ap = {n: M.average_precision(E.topic_scores(clip_dev, T[idx]), y) for n, idx in cands.items()}
-            best = max(ap, key=ap.get)
-            C.dump({"rule": "max dev ranking AP", "dev_ap": ap, "best": best, "prompts": [self.prompts[j] for j in cands[best]],
-                    "dev_positive_rate": float(np.mean(y))}, C.out(self.cfg, "retrieval/prompt_selection.json"))
-            self._c["dev_scores"], self._c["dev_y"] = E.topic_scores(clip_dev, T[cands[best]]), y
-            self._c["scores"] = E.topic_scores(self.clip(), T[cands[best]])
-            np.save(C.out(self.cfg, "retrieval/pool_scores.npy"), self._c["scores"])
-        return self._c["scores"]
-
-    def order(self) -> list[int]:
-        return S.rank(self.ids, self.topic_scores())
-
-    def tau(self, rule) -> float | None:
-        """Ngưỡng relevance: None (không lọc) | số cố định | "dev_f1" (chọn trên dev, cùng prompt/encoder với pool)."""
-        if rule is None or isinstance(rule, (int, float)):
-            return rule
-        assert rule == "dev_f1", rule
-        if "tau" not in self._c:
-            self.topic_scores()
-            r = M.tau_dev_f1(self._c["dev_scores"], self._c["dev_y"])
-            C.dump({"rule": rule, **r}, C.out(self.cfg, "retrieval/tau.json"))
-            self._c["tau"] = r["tau"]
-        return self._c["tau"]
+def import_exports(cfg, names=None, seeds=None, ks=None) -> pd.DataFrame:
+    """Mỗi `proposals/<tên>/s<seed>_k<K>/export.csv` (cột `unit_id` kiểu P-026, hoặc `image`) → manifest đã chốt
+    `selections/s<seed>_k<K>_<tên>.json`. Kiểm: id thuộc pool, không trùng, ≤ K. Ít hơn K → bù ảnh control từ base train
+    (`pad_ids`, giữ cùng số ảnh train / số update) và ghi `shortfall`. Manifest đã có thì giữ (đã chốt)."""
+    from .proposals import image_of, list_exports
+    pool = set(C.read_ids(_art(cfg, "splits/pool_ids.txt")))
+    control = C.read_ids(_art(cfg, "splits/control_ids.txt"))
+    ex = list_exports(cfg)
+    if ex.empty:
+        raise FileNotFoundError(f"không có {cfg['art']}/proposals/*/s*_k*/export.csv — chạy block 2 hoặc gắn output chứa nó")
+    rows = []
+    for r in ex.itertuples():
+        if (names and r.name not in names) or (seeds and r.seed not in seeds) or (ks and r.k not in ks):
+            continue
+        assert r.name != CONTROL and r.name not in PRIVILEGED, f"tên nhánh {r.name} dành riêng"
+        df = pd.read_csv(r.path)
+        ids = [image_of(u) for u in df.unit_id] if "unit_id" in df else df.image.astype(str).tolist()
+        assert len(ids) == len(set(ids)), f"{r.path}: id trùng"
+        assert len(ids) <= r.k, f"{r.path}: {len(ids)} id > K={r.k}"
+        bad = set(ids) - pool
+        assert not bad, f"{r.path}: {len(bad)} id không thuộc pool, vd {sorted(bad)[:3]}"
+        p = _sel(cfg, r.seed, r.k, r.name)
+        if not p.exists():
+            C.freeze(p, ids, branch=r.name, seed=r.seed, k=r.k, source=str(r.path), shortfall=r.k - len(ids),
+                     pad_ids=control[:r.k - len(ids)])
+        rows.append({"branch": r.name, "seed": r.seed, "k": r.k, "n": len(ids), "shortfall": r.k - len(ids)})
+    return pd.DataFrame(rows)
 
 
-def p_random(pool: Pool, k: int, seed: int):
-    return S.random_k(pool.ids, k, seed)
+def oracle_positive(cfg, seeds, ks) -> None:
+    """Nhánh tham chiếu ORACLE_POSITIVE: ngẫu nhiên trong ảnh pool có novel (dùng nhãn ẩn, ghi log); thiếu thì bù negative ngẫu nhiên."""
+    oracle = _oracle(cfg, "selection")
+    novel = _meta(cfg)["novel"]
+    pool = C.read_ids(_art(cfg, "splits/pool_ids.txt"))
+    pos = oracle.privileged_positive_ids(novel, reason="ORACLE_POSITIVE")
+    neg = sorted(set(pool) - set(pos))
+    for s in seeds:
+        for k in ks:
+            ids = S.random_k(pos, k, 1000 + s)
+            pad = k - len(ids)
+            C.freeze(_sel(cfg, s, k, "ORACLE_POSITIVE"), ids + (S.random_k(neg, pad, 2000 + s) if pad else []),
+                     branch="ORACLE_POSITIVE", seed=s, k=k, privileged=True, padded_negatives=pad)
 
 
-def p_diversity(pool: Pool, k: int, seed: int):
-    """Recipe P-026 (không topic): greedy min_dist trên DINOv2-S theo thứ tự ngẫu nhiên."""
-    md = pool.cfg["diverse"]["min_dist"]
-    ids, f = S.greedy_diverse(pool.ids, np.random.default_rng(seed).permutation(len(pool.ids)), pool.dino(), k, md)
-    return ids, {"relax": f, "emb": "dinov2", "min_dist": md}
-
-
-def p_retrieval(pool: Pool, k: int, seed: int):
-    return [pool.ids[i] for i in pool.order()[:k]]
-
-
-def p_retrieval_diverse(pool: Pool, k: int, seed: int):
-    from . import embed as E
-    d = pool.cfg["diverse"]
-    ids, f = S.greedy_diverse(pool.ids, pool.order()[:d["max_rank_mult"] * k], E.image_level(pool.clip()), k, d["min_dist"])
-    return ids, {"relax": f, "emb": "clip", "min_dist": d["min_dist"]}
-
-
-def make_algo1(mode: str):
-    """Algo 1 và đối chứng (§9): history = ALGO1, batch = ALGO1_BATCH, topb = ALGO1_TOPB.
-    relevance = điểm topic CLIP (max theo crop, prompt chọn trên dev); v_x = CLIP image embedding (trung bình crop)."""
-    def fn(pool: Pool, k: int, seed: int):
-        from . import embed as E
-        from .algo1 import algo1_select
-        a = pool.cfg["algo1"]
-        return algo1_select(pool.ids, pool.topic_scores(), E.image_level(pool.clip()), k, a["K"], a["B"], pool.tau(a["tau"]), mode)
-    return fn
-
-
-PROPOSERS = {"RANDOM": p_random, "DIVERSITY": p_diversity, "RETRIEVAL": p_retrieval, "RETRIEVAL_DIVERSE": p_retrieval_diverse,
-             "ALGO1": make_algo1("history"), "ALGO1_BATCH": make_algo1("batch"), "ALGO1_TOPB": make_algo1("topb")}
-
-
-def from_ranked_file(path: Path):
-    """Proposer từ file xếp hạng ngoài (txt mỗi dòng một id, hoặc csv cột `image`): lấy k id đầu, bỏ qua seed.
-    File phải được tạo KHÔNG dùng nhãn pool — pipeline chỉ kiểm được id thuộc pool."""
-    path = Path(path)
-    ids = pd.read_csv(path).image.astype(str).tolist() if path.suffix == ".csv" else C.read_ids(path)
-
-    def fn(pool, k, seed):
-        return ids[:k], {"source": str(path), "deterministic": True}
-    return fn
-
-
-def discover_ranked_files(root: Path = C.INPUT) -> dict:
-    """Mọi file `proposals/*.txt|csv` trong input đã gắn -> {EXT_<tên file>: proposer}."""
-    files = sorted({p for d in ("*", "*/*", "*/*/*") for p in root.glob(f"{d}/proposals/*") if p.suffix in (".txt", ".csv")})
-    return {f"EXT_{p.stem}": from_ranked_file(p) for p in files}
-
-
-def propose(cfg, proposers: dict, seeds, ks, pool: Pool) -> None:
-    """Chạy từng proposer trong `no_oracle_access()`, kiểm đầu ra, chốt manifest. Manifest đã có thì bỏ qua."""
-    pool_set = set(pool.ids)
-    for name, fn in proposers.items():
-        assert name != CONTROL and name not in PRIVILEGED, f"tên nhánh {name} dành riêng"
-        for s in seeds:
-            for k in ks:
-                p = _sel(cfg, s, k, name)
-                if p.exists():
-                    continue
-                print(f"proposal {name} seed={s} K={k}", flush=True)
-                t0 = time.time()
-                with no_oracle_access():
-                    r = fn(pool, k, 1000 + s)
-                ids, meta = r if isinstance(r, tuple) else (r, {})
-                ids = [str(i) for i in ids]
-                assert len(ids) == k and len(set(ids)) == k, f"{name}: cần đúng {k} id khác nhau, nhận {len(ids)} ({len(set(ids))} khác nhau)"
-                bad = set(ids) - pool_set
-                assert not bad, f"{name}: {len(bad)} id không thuộc pool, vd {sorted(bad)[:3]}"
-                C.freeze(p, ids, branch=name, seed=s, k=k, seconds=time.time() - t0, **meta)
-
-
-def propose_privileged(cfg, branches, seeds, ks, pool: Pool) -> None:
-    """Nhánh tham chiếu dùng nhãn ẩn (ghi log): ORACLE_POSITIVE, RETRIEVAL_MATCHED. Chạy SAU khi nhánh thường đã chốt."""
-    if not set(branches) & set(PRIVILEGED):
-        return
-    oracle = _oracle(cfg, "retrieval")
-    novel = pool.topic
-    if "ORACLE_POSITIVE" in branches:
-        pos = oracle.privileged_positive_ids(novel, reason="ORACLE_POSITIVE")
-        neg = sorted(set(pool.ids) - set(pos))
-        for s in seeds:
-            for k in ks:
-                ids = S.random_k(pos, k, 1000 + s)
-                pad = k - len(ids)
-                C.freeze(_sel(cfg, s, k, "ORACLE_POSITIVE"), ids + (S.random_k(neg, pad, 2000 + s) if pad else []),
-                         branch="ORACLE_POSITIVE", seed=s, k=k, privileged=True, padded_negatives=pad)
-    if "RETRIEVAL_MATCHED" in branches:
-        # prefix ngắn nhất của ranking có >= số novel instance của RANDOM cùng (seed, K); bù ảnh control cho đủ K
-        control = C.read_ids(_art(cfg, "splits/control_ids.txt"))
-        ranked = [pool.ids[i] for i in pool.order()]
-        for s in seeds:
-            for k in ks:
-                rb, _ = oracle.reveal(_sel(cfg, s, k, "RANDOM"))
-                target = int((rb.cls == novel).sum())
-                cum = oracle.privileged_instance_counts(ranked[:k], novel, reason="RETRIEVAL_MATCHED").cumsum().to_numpy()
-                kp = min(int(np.searchsorted(cum, target)) + 1, k) if target else 0
-                C.freeze(_sel(cfg, s, k, "RETRIEVAL_MATCHED"), ranked[:kp], branch="RETRIEVAL_MATCHED", seed=s, k=k,
-                         privileged=True, pad_ids=control[:k - kp], target_novel_instances=target,
-                         got_novel_instances=int(cum[kp - 1]) if kp else 0)
-
-
-def retrieval_eval(cfg, pool: Pool) -> pd.DataFrame:
-    """Simulated annotation + chỉ số retrieval cho MỌI manifest đã chốt."""
-    oracle = _oracle(cfg, "retrieval")
-    n_pos = len(oracle.privileged_positive_ids(pool.topic, reason="recall@K denominator"))
-    dino, dix = pool.dino(), {i: j for j, i in enumerate(pool.ids)}
+def selection_eval(cfg) -> pd.DataFrame:
+    """Simulated annotation + thống kê MỌI manifest đã chốt (mở nhãn sau khi chốt): precision@K, recall@K, instance novel,
+    kích thước, timeofday; độ trùng (DINOv2) nếu field đã có trong cache của block 1."""
+    oracle = _oracle(cfg, "selection")
+    novel = _meta(cfg)["novel"]
+    n_pos = len(oracle.privileged_positive_ids(novel, reason="recall@K denominator"))
+    emb = None
+    try:
+        from .proposals import image_of, make_ctx
+        ctx = make_ctx(cfg, "pool")
+        t = ctx.cached("emb.dinov2_s", ctx.units)
+        if t is not None:
+            emb = dict(zip((image_of(u) for u in t.unit_ids), np.asarray(t.values)))
+    except Exception as e:  # không có cache field -> bỏ cột độ trùng
+        print("bỏ qua độ trùng:", e)
     rows = []
     for p in sorted(_art(cfg, "selections").glob("*.json")):
         m = C.read_frozen(p)
         bx, im = oracle.reveal(p)
-        rows.append({"seed": m["seed"], "k": m["k"], "branch": m["branch"], **M.retrieval_report(m["ids"], bx, im, pool.topic, n_pos),
-                     **M.batch_redundancy(dino[[dix[i] for i in m["ids"]]])})
+        row = {"seed": m["seed"], "k": m["k"], "branch": m["branch"], "shortfall": m.get("shortfall", 0),
+               **M.retrieval_report(m["ids"], bx, im, novel, n_pos)}
+        if emb is not None and m["ids"]:
+            row.update(M.batch_redundancy(np.stack([emb[i] for i in m["ids"]])))
+        rows.append(row)
     df = pd.DataFrame(rows).fillna(0)
-    df.to_csv(C.out(cfg, "retrieval/retrieval.csv"), index=False)
+    df.to_csv(C.out(cfg, "selection/selection.csv"), index=False)
     return df
+
 
 
 # ---------- 4. mở rộng head + finetune ----------
@@ -544,9 +412,10 @@ def train_branches(cfg, branches, seeds, ks) -> list[str]:
 
 # ---------- 5. đánh giá ----------
 
-def evaluate(cfg, branches, seeds, ks) -> dict:
+def evaluate(cfg, branches, seeds, ks, ref: str | None = None) -> dict:
     """Đánh giá MỌI run đã train trên final test (cache theo run). So base classes theo TÊN trên cùng ảnh:
-    base model với taxonomy base, model mở rộng với base + novel. Uplift = hiệu so với RANDOM cùng (seed, K)."""
+    base model với taxonomy base, model mở rộng với base + novel. Uplift = hiệu so với nhánh `ref` cùng (seed, K);
+    mặc định `random` (recipe của P-026), hoặc `RANDOM` (kết quả cũ)."""
     from . import yolo as Y
     meta = _meta(cfg)
     novel, names, base_names = meta["novel"], meta["names"], meta["base_names"]
@@ -607,15 +476,26 @@ def evaluate(cfg, branches, seeds, ks) -> dict:
     missing = sorted(plan - {f"s{a}_k{b}_{c}" for a, b, c in zip(df.seed, df.k, df.branch)})
     metrics = ["novel_ap50_95", "novel_ap50", "uplift_vs_base_model", rc, "base_map", "base_map_delta", "all_map",
                "n_novel_images", "n_novel_instances", "n_base_instances_new"]
-    summ = M.paired_summary(df, metrics) if "RANDOM" in set(df.branch) else df.groupby(["k", "branch"])[metrics].agg(["mean", "std"])
+    ref = ref or next((b for b in ("random", "RANDOM") if b in set(df.branch)), None)
+    summ = M.paired_summary(df, metrics, ref) if ref in set(df.branch) else df.groupby(["k", "branch"])[metrics].agg(["mean", "std"])
     uplift = None
-    if "RANDOM" in set(df.branch):
-        ref = df[df.branch == "RANDOM"].set_index(["seed", "k"]).novel_ap50_95
-        uplift = df.assign(uplift_novel_ap50_95=df.novel_ap50_95 - ref.reindex(pd.MultiIndex.from_arrays([df.seed, df.k])).to_numpy()) \
+    if ref in set(df.branch):
+        rv = df[df.branch == ref].set_index(["seed", "k"]).novel_ap50_95
+        uplift = df.assign(uplift_novel_ap50_95=df.novel_ap50_95 - rv.reindex(pd.MultiIndex.from_arrays([df.seed, df.k])).to_numpy()) \
             .pivot_table(index=["k", "branch"], columns="seed", values="uplift_novel_ap50_95")
-    ret_p = _art(cfg, "retrieval/retrieval.csv")
-    ret = pd.read_csv(ret_p).groupby(["k", "branch"])[["precision_at_k", "recall_at_k", "novel_instances", "nn_cos_mean"]].agg(["mean", "std"]) \
-        if ret_p.exists() else None
+    # AP50-95 từng class (thang 0–100, P-026 focus §4B); dòng BASE_MODEL để so trực tiếp
+    pcs = []
+    for res in sorted(_art(cfg, "runs").glob("*/result.json")):
+        r, ap = C.load(res), C.load(_art(cfg, f"eval/{res.parent.name}.json"))["ap"]
+        pcs.append({"k": r["k"], "branch": r["branch"], **{c: 100 * ap.get(c, {}).get("ap50_95", np.nan) for c in names}})
+    per_class = pd.DataFrame(pcs).groupby(["k", "branch"])[names].mean()
+    per_class.loc[(0, "BASE_MODEL"), :] = [100 * base_ap.get(c, {}).get("ap50_95", np.nan) for c in names]
+    per_class = per_class.sort_index().round(2)
+    ret_p = next((q for q in (_art(cfg, "selection/selection.csv"), _art(cfg, "retrieval/retrieval.csv")) if q.exists()), None)
+    ret = None
+    if ret_p is not None:
+        rt = pd.read_csv(ret_p)
+        ret = rt.groupby(["k", "branch"])[[c for c in ("precision_at_k", "recall_at_k", "novel_instances", "nn_cos_mean") if c in rt]].agg(["mean", "std"])
 
     def md(t):
         if t is None:
@@ -630,23 +510,26 @@ def evaluate(cfg, branches, seeds, ks) -> dict:
 
 Base model ({desc}): base mAP50-95 = {base_map:.4f}, AP50-95 {novel} = {base_novel:.4f} trên final test. Thiếu run: {missing or 'không'}.
 `uplift_vs_base_model` = AP {novel} sau finetune − AP {novel} của base model.
-Annotation là mô phỏng từ ground truth BDD. ORACLE_POSITIVE / RETRIEVAL_MATCHED dùng nhãn ẩn (tham chiếu, không phải phương pháp thực tế).
+Annotation là mô phỏng từ ground truth BDD. ORACLE_POSITIVE dùng nhãn ẩn (tham chiếu, không phải phương pháp thực tế). Nhánh tham chiếu: `{ref}`.
 
 ## 1. Tập dữ liệu do mỗi cách proposal tạo ra (pool, trước khi train)
 {md(ret)}
 
-## 2. Uplift AP50-95 novel so với RANDOM, theo từng seed
+## 2. Uplift AP50-95 novel so với `{ref}`, theo từng seed
 {md(uplift)}
 
-## 3. Detection trên final test: mean/std và hiệu từng cặp so với RANDOM
+## 3. Detection trên final test: mean/std và hiệu từng cặp so với `{ref}`
 {md(summ)}
 
-## 4. Từng run
+## 4. AP50-95 từng class (0–100), trung bình theo seed; dòng BASE_MODEL = model ban đầu
+{md(per_class)}
+
+## 5. Từng run
 {md(df[['seed', 'k', 'branch'] + metrics].sort_values(['k', 'branch', 'seed']).set_index(['k', 'branch', 'seed']))}
 """
     C.out(cfg, "eval/report.md").write_text(report, encoding="utf-8")
-    return {"runs": df, "summary": summ, "uplift": uplift, "retrieval": ret, "missing": missing, "base_map": base_map,
-            "base_novel_ap": base_novel}
+    return {"runs": df, "summary": summ, "uplift": uplift, "retrieval": ret, "per_class": per_class, "missing": missing,
+            "base_map": base_map, "base_novel_ap": base_novel, "ref": ref}
 
 
 # ---------- 6. gói kết quả ----------

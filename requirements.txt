@@ -4,3 +4,6 @@ ultralytics>=8.3,<8.4
 open_clip_torch>=2.24
 tabulate
 kagglehub
+# pipeline proposal (src/rav, copy từ P-026): pydantic, opencv có sẵn trên Kaggle
+av
+ImageHash

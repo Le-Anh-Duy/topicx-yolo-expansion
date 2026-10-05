@@ -1,0 +1,39 @@
+# Block 2 — các cách proposal để so sánh. Mỗi recipe là tên recipe đăng ký sẵn của P-026 (random / uniform / diversity)
+# hoặc RecipeConfig đầy đủ (định dạng P-026, CONTRACTS §7) — chép qua lại P-026 được nguyên văn.
+# `$texts` / `$tau` được thay bằng câu topic và ngưỡng chọn trên dev (notebook 20); `null` = không lọc.
+
+goal: "frame có xe buýt (bus) trên đường"   # goal của phiên, ghi vào mọi Decision
+texts:                                      # ứng viên câu mô tả; notebook 20 chọn trên dev theo luật khai báo trước (AP ranking cao nhất)
+  - a photo of a bus on the street
+  - a city bus in traffic
+  - a dashcam photo of a road with a bus
+  - a large public transit bus
+tau_rule: null          # null | dev_f1 | dev_precision>=0.8 (τ nhỏ nhất đạt precision dev ≥ 0.8)
+batch_size: 16          # B frame mỗi vòng
+ks: [128, 256]          # ngân sách tích lũy (bội số batch_size); ≤ max(ks) của exp.yaml (cỡ tập control)
+smoke: {ks: [32]}
+
+recipes:
+  random: random          # baseline của P-026 (tham chiếu uplift)
+  diversity: diversity    # recipe hiện tại của P-026: novelty DINOv2 + greedy_nms, không dùng topic
+  text_topk:              # chỉ relevance: top theo text_match
+    name: text_topk
+    description: Top theo độ khớp CLIP với câu topic.
+    reference: {type: session_kept}
+    objectives: [{type: text_match, strength: 1.0, params: {texts: $texts, tau: $tau}}]
+    combiner: {type: product_strength}
+    selector: {type: greedy_nms, params: {field: emb.clip_b32, nms_s: 0.0, min_dist: 0.0}}
+  algo1:                  # Algo 1: top-K relevance (+ τ) rồi farthest-first xét lịch sử (docs/algo_1_...md)
+    name: algo1
+    description: Algo 1 — semantic retrieval + history-aware visual diversity.
+    reference: {type: session_kept}
+    objectives: [{type: text_match, strength: 1.0, params: {texts: $texts, top_k: 500, tau: $tau}}]
+    combiner: {type: product_strength}
+    selector: {type: farthest_history, params: {field: emb.clip_b32, history: true}}
+  algo1_batch:            # đối chứng của Algo 1: diversity chỉ trong batch
+    name: algo1_batch
+    description: Như algo1 nhưng bỏ lịch sử (diversity trong batch).
+    reference: {type: session_kept}
+    objectives: [{type: text_match, strength: 1.0, params: {texts: $texts, top_k: 500, tau: $tau}}]
+    combiner: {type: product_strength}
+    selector: {type: farthest_history, params: {field: emb.clip_b32, history: false}}

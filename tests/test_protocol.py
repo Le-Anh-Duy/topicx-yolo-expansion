@@ -21,12 +21,13 @@ def _toy(n_groups=60, per=5, seed=0):
     return imgs, has_novel
 
 
-def test_selector_modules_label_free():
-    for f in ("select.py", "embed.py", "algo1.py"):
-        tree = ast.parse((SRC / f).read_text(encoding="utf-8"))
+def test_proposal_pipeline_is_label_free():
+    """src/rav (pipeline proposal) không import harness (`topicx`), oracle hay pandas đọc nhãn — chỉ thấy ảnh + field."""
+    for f in (SRC.parent / "rav").rglob("*.py"):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
         mods = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         mods |= {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-        assert not {m for m in mods if "oracle" in m or m.endswith("data") or "pandas" in m}, (f, mods)
+        assert not {m for m in mods if "topicx" in m or "oracle" in m or "pandas" in m}, (f, mods)
 
 
 def test_splits_disjoint_base_clean_pool_mixed():
@@ -70,28 +71,6 @@ def test_test_source_val_only():
     assert {src[i] for k in ("dev", "pool", "base") for i in s[k]} == {"train"}
 
 
-def test_propose_plugin_boundary(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from topicx import pipeline as P
-    monkeypatch.setattr(common, "WORK", tmp_path)
-    cfg = {"art": "art"}
-    pool = SimpleNamespace(ids=[f"p{i}" for i in range(20)], topic="bus")
-    P.propose(cfg, {"MINE": lambda pool, k, seed: (pool.ids[:k], {"note": "x"})}, [0], [5], pool)
-    m = common.read_frozen(tmp_path / "art/selections/s0_k5_MINE.json")
-    assert m["ids"] == pool.ids[:5] and m["note"] == "x"
-    with pytest.raises(AssertionError, match="khác nhau"):
-        P.propose(cfg, {"DUP": lambda pool, k, seed: [pool.ids[0]] * k}, [0], [5], pool)
-    with pytest.raises(AssertionError, match="không thuộc pool"):
-        P.propose(cfg, {"OUT": lambda pool, k, seed: [f"x{i}" for i in range(k)]}, [0], [5], pool)
-    od = tmp_path / "splits_oracle_boxes.csv"
-    od.write_text("image,cls")
-    with pytest.raises(PermissionError):
-        P.propose(cfg, {"PEEK": lambda pool, k, seed: open(od).read() and pool.ids[:k]}, [0], [5], pool)
-    with pytest.raises(AssertionError, match="dành riêng"):
-        P.propose(cfg, {"ORACLE_POSITIVE": lambda pool, k, seed: pool.ids[:k]}, [0], [5], pool)
-
-
 def test_bundle_excludes_weights_and_oracle(tmp_path, monkeypatch):
     import zipfile
 
@@ -104,14 +83,6 @@ def test_bundle_excludes_weights_and_oracle(tmp_path, monkeypatch):
         (art / rel).write_text("x")
     names = set(zipfile.ZipFile(P.bundle({"art": "art"}, "uplift")).namelist())
     assert names == {"eval/report.md", "runs/s0_k250_RANDOM/result.json", "splits/meta.json", "MANIFEST.txt"}
-
-
-def test_ranked_file_proposer(tmp_path):
-    from topicx import pipeline as P
-    f = tmp_path / "my-dataset" / "proposals" / "p026.txt"  # như /kaggle/input/<dataset>/proposals/
-    common.write_ids(["b", "a", "c"], f)
-    assert P.from_ranked_file(f)(None, 2, 0)[0] == ["b", "a"]
-    assert list(P.discover_ranked_files(tmp_path)) == ["EXT_p026"]
 
 
 def test_locate_bdd_through_symlink(tmp_path):
@@ -191,22 +162,9 @@ def test_reveal_only_manifest_and_guard(tmp_path):
     open(od / "pool_boxes.csv").close()
 
 
-def test_random_and_topk_deterministic():
+def test_random_k_deterministic():
     ids = [f"i{i}" for i in range(50)]
     assert select.random_k(ids, 10, 3) == select.random_k(list(reversed(ids)), 10, 3)
-    scores = np.arange(50)[::-1].astype(float)
-    assert select.topk(ids, scores, 3) == ["i0", "i1", "i2"]
-
-
-def test_greedy_diverse_skips_near_duplicates():
-    rng = np.random.default_rng(0)
-    base = rng.normal(size=(5, 16))
-    emb = np.repeat(base, 4, axis=0) + 1e-4 * rng.normal(size=(20, 16))  # 5 cụm, mỗi cụm 4 bản gần trùng
-    ids = [f"i{i}" for i in range(20)]
-    picked, f = select.greedy_diverse(ids, list(range(20)), emb, 5, min_dist=0.05)
-    assert f == 1.0 and len({int(p[1:]) // 4 for p in picked}) == 5
-    picked, f = select.greedy_diverse(ids, list(range(20)), emb, 8, min_dist=0.05)
-    assert len(picked) == 8 and f == 0.0  # không đủ ảnh khác nhau -> nới hết, lấy đầu thứ tự
 
 
 def test_average_precision():
@@ -218,6 +176,18 @@ def test_match_gt_one_pred_per_gt():
     gt = np.array([[0, 0, 10, 10], [20, 20, 30, 30]], float)
     pred = np.array([[0, 0, 10, 10], [1, 1, 10, 10]], float)
     assert match_gt(gt, pred, np.array([0.9, 0.8]), 0.5).tolist() == [True, False]
+
+
+def test_explore_match_and_compare():
+    from topicx.explore import _match, compare_errors
+    gt = np.array([[0, 0, 10, 10], [20, 20, 30, 30]], float)
+    hit, used = _match(gt, np.array([[1, 1, 10, 10], [0, 0, 10, 10], [50, 50, 60, 60]], float), np.array([0.5, 0.9, 0.8]), 0.5)
+    assert hit.tolist() == [True, False] and used.tolist() == [False, True, False]   # conf cao khớp trước; pred thứ 3 là FP
+    base = pd.DataFrame({"image": ["a", "a"], "cls": ["bus", "car"], "x1": [0, 1], "y1": [0, 1], "x2": [5, 6], "y2": [5, 6],
+                         "hit": [False, True]})
+    after = base.assign(hit=[True, False])
+    r = compare_errors(base, after)
+    assert r.loc["bus", "fixed"] == 1 and r.loc["car", "broken"] == 1
 
 
 def test_head_expansion_preserves_old_classes(tmp_path):
