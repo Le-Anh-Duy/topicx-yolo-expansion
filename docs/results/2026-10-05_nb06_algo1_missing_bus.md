@@ -59,7 +59,11 @@ Thứ tự **TOPB > BATCH > ALGO1** đúng ở mọi seed và cả hai mức ng�
 
 1. **Retrieval có ích:** có. Lặp lại đúng kết quả của NB00: TOPB@256 đạt 0,212 so với RETRIEVAL@250 0,212.
 2. **Diversity (trong batch hoặc theo lịch sử) cải thiện học novel class ở cùng ngân sách:** **không**. Kết quả bác bỏ giả thuyết của baseline theo đúng tiêu chí đặc tả đã đặt trước ở §9: "redundancy giảm nhưng AP không cải thiện, positive yield giảm quá nhiều".
-3. **Nguyên nhân có khả năng nhất:** τ quá lỏng. Theo luật `dev_f1`, τ chỉ đạt precision 0,355 trên dev, nên tập ứng viên C_t (500 ảnh) chứa nhiều ảnh không có bus. Farthest-first lại ưu tiên các ảnh khác biệt, đúng rủi ro "ưu tiên outlier" mà đặc tả §10 đã nêu. Kết quả là chọn nhiều ảnh negative hơn TOPB.
+3. **Nguyên nhân có khả năng nhất:** tập ứng viên C_t quá rộng so với lượng positive.
+   - **τ không lọc ảnh nào.** Mọi vòng có `n_candidates = 500`, và relevance thấp nhất trong batch là `rel_min ≈ 0,285`, cao hơn τ = 0,259. Giới hạn thực sự là K = 500.
+   - Top-500 theo relevance có precision thấp hơn top-128 (0,91) và top-256 (0,84). Chưa đo trực tiếp.
+   - Farthest-first chọn rải ra trong 500 ứng viên, nên trúng nhiều ảnh không có bus hơn TOPB. Đây là rủi ro "ưu tiên outlier" mà đặc tả §10 đã nêu.
+   - Luật `dev_f1` cũng cho τ có precision chỉ 0,355 trên dev. Nếu K lớn hơn hoặc pool nhỏ hơn, τ này cũng sẽ không chặn được ảnh negative.
 4. **Theo từng instance, diversity cũng chưa thấy lợi ích rõ.** ALGO1_BATCH@256 có 251 instance và đạt 0,199; TOPB@128 có 181 instance mà đã đạt 0,192. Phép so sánh này không kiểm soát được biến nào khác, nên chưa phải bằng chứng; cần nhánh có số instance khớp nhau.
 
 ## Lưu ý khi trích dẫn
@@ -71,6 +75,10 @@ Thứ tự **TOPB > BATCH > ALGO1** đúng ở mọi seed và cả hai mức ng�
 ## Việc tiếp theo
 
 1. Chạy nốt `s2_k256_*`: gắn output version này làm input rồi chạy lại notebook (5 run, khoảng 1,6 h).
-2. Thử τ chặt hơn, với luật khai báo trước. Ví dụ τ nhỏ nhất sao cho precision trên dev ≥ 0,8, hoặc chọn C_t là top-B×m theo relevance. Mục tiêu là xem diversity còn bị thiệt về yield không khi C_t chủ yếu là positive.
+2. Thu hẹp C_t bằng luật khai báo trước rồi chạy lại. Có hai cách:
+   - giảm K, ví dụ K ∈ {64, 128};
+   - dùng τ chặt hơn mức đang có hiệu lực (≈ 0,285), ví dụ τ nhỏ nhất sao cho precision trên dev ≥ 0,8.
+
+   Mục tiêu là xem diversity còn bị thiệt về yield không khi C_t chủ yếu là positive. Nên đo thêm precision của C_t trong mỗi vòng (cần mở oracle sau khi đã chốt manifest).
 3. Biến thể cân bằng relevance và diversity, ví dụ điểm `r(x) + λ·δ(x)` (đặc tả §10 đã liệt kê là hướng nghiên cứu sau).
 4. Nhánh khớp số instance (`RETRIEVAL_MATCHED` hoặc tương tự) để tách hiệu ứng "nhiều bus hơn" khỏi "ảnh tốt hơn".
